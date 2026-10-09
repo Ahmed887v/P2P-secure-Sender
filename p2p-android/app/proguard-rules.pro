@@ -1,0 +1,3 @@
+-keep class com.p2psecure.share.** { *; }
+-dontwarn org.java_websocket.**
+-dontwarn fi.iki.elonen.**

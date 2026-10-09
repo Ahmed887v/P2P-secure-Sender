@@ -1,0 +1,3905 @@
+SOURCE_CODE.txt
+ملفات المصدر التي تتكامل لتشغيل تطبيق نقل آمن / Secure Share
+كل قسم يبدأ بعنوان ===== FILE: المسار ===== ويتبعه سطر فارغ ثم المحتوى ثم سطر فارغ.
+مسار البيانات: بث من القرص (FileSource/pread) إلى قرص المستلم أو OPFS. قطعة 49152. قبول مرة واحدة. استئناف have_bits. معرّف مرسل ثابت بعد سقوط WS. استعادة مقبض الملف من IndexedDB.
+
+===== FILE: settings.gradle.kts =====
+
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "P2PSecureShare"
+include(":app")
+
+===== FILE: build.gradle.kts =====
+
+plugins {
+    id("com.android.application") version "8.7.2" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+}
+
+===== FILE: app/build.gradle.kts =====
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+android {
+    namespace = "com.p2psecure.share"
+    compileSdk = 35
+    defaultConfig {
+        applicationId = "com.p2psecure.share"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0.0"
+        resourceConfigurations += setOf("en", "ar")
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+    signingConfigs {
+        create("debuglocal") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+        create("release") {
+            val filePath = System.getenv("KEYSTORE_FILE")
+            if (!filePath.isNullOrBlank()) {
+                storeFile = file(filePath)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            val filePath = System.getenv("KEYSTORE_FILE")
+            signingConfig = if (!filePath.isNullOrBlank()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debuglocal")
+            }
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { viewBinding = false }
+    androidResources {
+        noCompress += "zip"
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+}
+
+dependencies {
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.2.0")
+    implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("org.java-websocket:Java-WebSocket:1.5.7")
+    implementation("org.nanohttpd:nanohttpd-websocket:2.3.1")
+    implementation("com.github.mwiede:jsch:0.2.21")
+}
+
+===== FILE: gradle.properties =====
+
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+android.nonTransitiveRClass=true
+kotlin.code.style=official
+kotlin.compiler.execution.strategy=in-process
+kotlin.incremental=false
+
+===== FILE: gradle/wrapper/gradle-wrapper.properties =====
+
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.9-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+
+===== FILE: app/proguard-rules.pro =====
+
+-keep class com.p2psecure.share.** { *; }
+-dontwarn org.java_websocket.**
+-dontwarn fi.iki.elonen.**
+
+===== FILE: app/src/main/AndroidManifest.xml =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+
+    <application
+        android:name=".ShareApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SecureShare"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".SetupActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
+        <service
+            android:name=".TransferService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+    </application>
+</manifest>
+
+===== FILE: app/src/main/java/com/p2psecure/share/ShareApp.kt =====
+
+package com.p2psecure.share
+
+import android.app.Application
+import android.content.Context
+
+class ShareApp : Application() {
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(LocaleHelper.wrap(base))
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/Prefs.kt =====
+
+package com.p2psecure.share
+
+import android.content.Context
+
+class Prefs(context: Context) {
+    private val sp = context.getSharedPreferences("secure_share", Context.MODE_PRIVATE)
+    var language: String
+        get() = sp.getString("language", "ar") ?: "ar"
+        set(value) { sp.edit().putString("language", value).apply() }
+    var theme: String
+        get() = sp.getString("theme", "dark") ?: "dark"
+        set(value) { sp.edit().putString("theme", value).apply() }
+    var ngrokToken: String
+        get() = sp.getString("ngrok_token", "") ?: ""
+        set(value) { sp.edit().putString("ngrok_token", value).apply() }
+    var setupDone: Boolean
+        get() = sp.getBoolean("setup_done", false)
+        set(value) { sp.edit().putBoolean("setup_done", value).apply() }
+    var depsInstalled: Boolean
+        get() = sp.getBoolean("deps_installed", false)
+        set(value) { sp.edit().putBoolean("deps_installed", value).apply() }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/LocaleHelper.kt =====
+
+package com.p2psecure.share
+
+import android.content.Context
+import android.content.res.Configuration
+import java.util.Locale
+
+object LocaleHelper {
+    fun wrap(base: Context): Context {
+        return try {
+            val lang = Prefs(base).language.ifBlank { "ar" }
+            val locale = Locale(lang)
+            Locale.setDefault(locale)
+            val config = Configuration(base.resources.configuration)
+            config.setLocale(locale)
+            config.setLayoutDirection(locale)
+            base.createConfigurationContext(config)
+        } catch (_: Exception) {
+            base
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/ThemeHelper.kt =====
+
+package com.p2psecure.share
+
+import android.app.Activity
+import android.content.res.ColorStateList
+import android.graphics.Color
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ProgressBar
+import android.widget.TextView
+import androidx.core.view.WindowCompat
+
+object ThemeHelper {
+    data class Palette(val bg: Int, val card: Int, val accent: Int, val text: Int, val muted: Int)
+
+    fun palette(name: String): Palette = when (name) {
+        "blue" -> Palette(
+            bg = Color.parseColor("#071428"),
+            card = Color.parseColor("#0E2A52"),
+            accent = Color.parseColor("#3D8BFF"),
+            text = Color.parseColor("#EAF3FF"),
+            muted = Color.parseColor("#8FB4E8")
+        )
+        "green" -> Palette(
+            bg = Color.parseColor("#10221A"),
+            card = Color.parseColor("#163127"),
+            accent = Color.parseColor("#198754"),
+            text = Color.parseColor("#E9F7EF"),
+            muted = Color.parseColor("#8FB9A4")
+        )
+        else -> Palette(
+            bg = Color.parseColor("#1A1A2E"),
+            card = Color.parseColor("#16213E"),
+            accent = Color.parseColor("#0D6EFD"),
+            text = Color.parseColor("#E8EEFC"),
+            muted = Color.parseColor("#8EA0C8")
+        )
+    }
+
+    fun apply(activity: Activity, root: View, themeName: String) {
+        val p = palette(themeName)
+        try {
+            activity.window.statusBarColor = p.bg
+            activity.window.navigationBarColor = p.bg
+            activity.window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(p.bg))
+            WindowCompat.getInsetsController(activity.window, root)
+                .isAppearanceLightStatusBars = false
+        } catch (_: Exception) {
+        }
+        if (root.id != R.id.monitorPanel) root.setBackgroundColor(p.bg)
+        try {
+            tint(root, p)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun tint(view: View, p: Palette) {
+        when (view) {
+            is Button -> {
+                view.backgroundTintList = ColorStateList.valueOf(p.accent)
+                view.setTextColor(Color.WHITE)
+            }
+            is EditText -> {
+                view.setBackgroundColor(p.card)
+                view.setTextColor(p.text)
+                view.setHintTextColor(p.muted)
+            }
+            is ProgressBar -> {
+                view.progressTintList = ColorStateList.valueOf(p.accent)
+                view.progressBackgroundTintList = ColorStateList.valueOf(p.card)
+            }
+            is TextView -> {
+                val muted = view.tag == "muted"
+                view.setTextColor(if (muted) p.muted else p.text)
+            }
+        }
+        if (view.id == R.id.monitorPanel) view.setBackgroundColor(p.card)
+        if (view is ViewGroup) {
+            for (i in 0 until view.childCount) tint(view.getChildAt(i), p)
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/NetworkHelper.kt =====
+
+package com.p2psecure.share
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import android.text.format.Formatter
+import java.net.Inet4Address
+import java.net.NetworkInterface
+
+object NetworkHelper {
+    fun onWifi(context: Context): Boolean {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val net = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(net) ?: return false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun onCellular(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val net = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(net) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+    }
+
+    fun wifiIpv4(context: Context): String {
+        try {
+            val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val ip = Formatter.formatIpAddress(wm.connectionInfo.ipAddress)
+            if (ip.isNotBlank() && ip != "0.0.0.0") return ip
+        } catch (_: Exception) {
+        }
+        return localIpv4()
+    }
+
+    fun localIpv4(): String {
+        val interfaces = NetworkInterface.getNetworkInterfaces()?.toList() ?: return ""
+        fun pick(pred: (NetworkInterface) -> Boolean): String {
+            for (nif in interfaces) {
+                if (!nif.isUp || nif.isLoopback || !pred(nif)) continue
+                for (addr in nif.inetAddresses) {
+                    if (!addr.isLoopbackAddress && addr is Inet4Address) {
+                        val ip = addr.hostAddress ?: continue
+                        if (!ip.startsWith("169.254")) return ip
+                    }
+                }
+            }
+            return ""
+        }
+        val wifi = pick {
+            it.name.startsWith("wlan") || it.name.startsWith("ap") || it.name.startsWith("swlan")
+        }
+        if (wifi.isNotBlank()) return wifi
+        return pick { true }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/AppLog.kt =====
+
+package com.p2psecure.share
+
+import android.util.Log
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
+
+object AppLog {
+    private const val MAX = 400
+    private val lines = CopyOnWriteArrayList<String>()
+    private val fmt = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+    fun i(msg: String) = add("I", msg)
+    fun w(msg: String) = add("W", msg)
+    fun e(msg: String, t: Throwable? = null) {
+        add("E", if (t != null) "$msg ${t.javaClass.simpleName}: ${t.message}" else msg)
+        if (t != null) Log.e(JavaTunnel.TAG, msg, t) else Log.e(JavaTunnel.TAG, msg)
+    }
+
+    @Synchronized
+    private fun add(level: String, msg: String) {
+        val line = "${fmt.format(Date())} $level $msg"
+        lines.add(line)
+        while (lines.size > MAX) lines.removeAt(0)
+        when (level) {
+            "W" -> Log.w(JavaTunnel.TAG, msg)
+            "E" -> {}
+            else -> Log.i(JavaTunnel.TAG, msg)
+        }
+    }
+
+    fun snapshot(): String = lines.takeLast(180).joinToString("\n")
+
+    fun clear() {
+        lines.clear()
+    }
+}
+
+data class TunnelRow(
+    val name: String,
+    val state: String,
+    val url: String,
+    val primary: Boolean,
+    val ageSec: Long,
+    val rttMs: Long
+)
+
+object ConnStats {
+    @Volatile var phase: String = "idle"
+    @Volatile var fileName: String = ""
+    @Volatile var fileSize: Long = 0
+    @Volatile var sentBytes: Long = 0
+    @Volatile var speedBps: Double = 0.0
+    @Volatile var rttMs: Long = 0
+    @Volatile var acksOk: Int = 0
+    @Volatile var acksRetry: Int = 0
+    @Volatile var clients: Int = 0
+
+    fun reset() {
+        phase = "idle"
+        fileName = ""
+        fileSize = 0
+        sentBytes = 0
+        speedBps = 0.0
+        rttMs = 0
+        acksOk = 0
+        acksRetry = 0
+    }
+
+    fun speedText(): String {
+        val b = speedBps
+        return when {
+            b <= 0 -> "--"
+            b < 1024 -> "${b.toInt()} B/s"
+            b < 1024 * 1024 -> String.format(Locale.US, "%.1f KB/s", b / 1024.0)
+            else -> String.format(Locale.US, "%.2f MB/s", b / (1024.0 * 1024.0))
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/CryptoEngine.kt =====
+
+package com.p2psecure.share
+
+import android.util.Base64
+import org.json.JSONObject
+import java.math.BigInteger
+import java.security.KeyFactory
+import java.security.KeyPairGenerator
+import java.security.SecureRandom
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECParameterSpec
+import java.security.spec.ECPoint
+import java.security.spec.ECPublicKeySpec
+import javax.crypto.Cipher
+import javax.crypto.KeyAgreement
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+
+class CryptoEngine {
+    private val pair = KeyPairGenerator.getInstance("EC").run {
+        initialize(ECGenParameterSpec("secp256r1"))
+        generateKeyPair()
+    }
+    private var aes: SecretKeySpec? = null
+
+    fun pubJwk(): String {
+        val pub = pair.public as ECPublicKey
+        val w = pub.w
+        return JSONObject()
+            .put("kty", "EC")
+            .put("crv", "P-256")
+            .put("x", b64url(to32(w.affineX)))
+            .put("y", b64url(to32(w.affineY)))
+            .toString()
+    }
+
+    fun derive(peerJwkRaw: String) {
+        val jwk = JSONObject(peerJwkRaw)
+        val x = BigInteger(1, b64urlDecode(jwk.getString("x")))
+        val y = BigInteger(1, b64urlDecode(jwk.getString("y")))
+        val params = (pair.public as ECPublicKey).params
+        val spec = ECPublicKeySpec(ECPoint(x, y), params)
+        val peer = KeyFactory.getInstance("EC").generatePublic(spec)
+        val ka = KeyAgreement.getInstance("ECDH")
+        ka.init(pair.private)
+        ka.doPhase(peer, true)
+        val shared = ka.generateSecret()
+        val key = hkdf(shared, ByteArray(32), "p2p-v1".toByteArray(), 32)
+        aes = SecretKeySpec(key, "AES")
+    }
+
+    fun encrypt(data: ByteArray, nonce: ByteArray): ByteArray {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, aes, GCMParameterSpec(128, nonce))
+        return c.doFinal(data)
+    }
+
+    fun ready(): Boolean = aes != null
+
+    companion object {
+        fun randomNonce(): ByteArray {
+            val n = ByteArray(12)
+            SecureRandom().nextBytes(n)
+            return n
+        }
+
+        private fun to32(n: BigInteger): ByteArray {
+            var b = n.toByteArray()
+            if (b.size > 32) b = b.copyOfRange(b.size - 32, b.size)
+            if (b.size < 32) b = ByteArray(32 - b.size) + b
+            return b
+        }
+
+        private fun b64url(data: ByteArray): String =
+            Base64.encodeToString(data, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+
+        private fun b64urlDecode(text: String): ByteArray {
+            var t = text.replace('-', '+').replace('_', '/')
+            while (t.length % 4 != 0) t += "="
+            return Base64.decode(t, Base64.DEFAULT)
+        }
+
+        private fun hkdf(ikm: ByteArray, salt: ByteArray, info: ByteArray, length: Int): ByteArray {
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(salt, "HmacSHA256"))
+            val prk = mac.doFinal(ikm)
+            mac.init(SecretKeySpec(prk, "HmacSHA256"))
+            mac.update(info)
+            mac.update(0x01)
+            return mac.doFinal().copyOf(length)
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/JavaTunnel.kt =====
+
+package com.p2psecure.share
+
+import com.jcraft.jsch.Channel
+import com.jcraft.jsch.ChannelShell
+import com.jcraft.jsch.JSch
+import com.jcraft.jsch.Session
+import java.io.ByteArrayOutputStream
+import java.net.URI
+import java.util.Properties
+
+data class TunnelTarget(
+    val name: String,
+    val user: String,
+    val host: String,
+    val port: Int,
+    val remotePort: Int
+)
+
+class JavaTunnel(val target: TunnelTarget) {
+    private var session: Session? = null
+    private var shell: Channel? = null
+    @Volatile private var watchRunning = false
+    private var watchThread: Thread? = null
+    @Volatile var publicUrl: String = ""
+        private set
+    @Volatile var lastError: String = ""
+        private set
+    @Volatile var lastBanner: String = ""
+        private set
+    @Volatile var startedAt: Long = 0
+        private set
+    @Volatile var rttMs: Long = -1
+        private set
+
+    fun isAlive(): Boolean {
+        val s = session
+        return s != null && s.isConnected && publicUrl.isNotBlank() && isTunnelUrl(publicUrl)
+    }
+
+    @Synchronized
+    fun start(localPort: Int): String {
+        if (isAlive()) {
+            AppLog.i("reuse ${target.name} $publicUrl")
+            return publicUrl
+        }
+        stop()
+        lastError = ""
+        publicUrl = ""
+        AppLog.i("try ${target.name} ${target.user}@${target.host}:${target.port}")
+        val url = tryOne(localPort)
+        if (url.isNotBlank() && isTunnelUrl(url)) {
+            publicUrl = url
+            lastError = ""
+            startedAt = System.currentTimeMillis()
+            AppLog.i("tunnel ready ${target.name} $url")
+            startWatchdog()
+            return url
+        }
+        AppLog.w("skip ${target.name} err=$lastError")
+        disconnectQuiet()
+        if (lastError.isBlank()) lastError = "no_url_${target.name}"
+        return ""
+    }
+
+    @Synchronized
+    fun stop() {
+        watchRunning = false
+        try {
+            watchThread?.interrupt()
+        } catch (_: Exception) {
+        }
+        watchThread = null
+        disconnectQuiet()
+        publicUrl = ""
+    }
+
+    private fun disconnectQuiet() {
+        try {
+            shell?.disconnect()
+        } catch (_: Exception) {
+        }
+        try {
+            session?.disconnect()
+        } catch (_: Exception) {
+        }
+        shell = null
+        session = null
+    }
+
+    private fun tryOne(localPort: Int): String {
+        var sess: Session? = null
+        var ch: Channel? = null
+        return try {
+            val jsch = JSch()
+            sess = jsch.getSession(target.user, target.host, target.port)
+            sess.setPassword("")
+            val cfg = Properties()
+            cfg["StrictHostKeyChecking"] = "no"
+            cfg["PreferredAuthentications"] = "none,password,keyboard-interactive,publickey"
+            cfg["UseDNS"] = "no"
+            sess.setConfig(cfg)
+            sess.serverAliveInterval = 12000
+            sess.serverAliveCountMax = 16
+            sess.setDaemonThread(true)
+            sess.connect(16000)
+            try {
+                sess.setPortForwardingR("*", target.remotePort, "127.0.0.1", localPort)
+            } catch (e: Exception) {
+                AppLog.w("rforward * ${target.name} ${e.message}")
+                sess.setPortForwardingR(target.remotePort, "127.0.0.1", localPort)
+            }
+            val pair = captureUrl(sess)
+            val url = pair.first
+            ch = pair.second
+            lastBanner = pair.third
+            if (url.isBlank() || !isTunnelUrl(url)) {
+                lastError = "no_url_${target.name}"
+                AppLog.w("no tunnel url from ${target.name}")
+                ch?.disconnect()
+                sess.disconnect()
+                return ""
+            }
+            session = sess
+            shell = ch
+            url.trimEnd('/')
+        } catch (e: Exception) {
+            lastError = (e.message ?: target.name).take(120)
+            AppLog.e("tryOne ${target.name} failed", e)
+            try {
+                ch?.disconnect()
+            } catch (_: Exception) {
+            }
+            try {
+                sess?.disconnect()
+            } catch (_: Exception) {
+            }
+            ""
+        }
+    }
+
+    private fun captureUrl(sess: Session): Triple<String, Channel?, String> {
+        val channel = sess.openChannel("shell") as ChannelShell
+        channel.setPty(false)
+        val input = channel.inputStream
+        channel.connect(8000)
+        val baos = ByteArrayOutputStream()
+        val buf = ByteArray(4096)
+        val end = System.currentTimeMillis() + 22000
+        var url = ""
+        var text = ""
+        while (System.currentTimeMillis() < end && sess.isConnected) {
+            val avail = try {
+                input.available()
+            } catch (_: Exception) {
+                0
+            }
+            if (avail > 0) {
+                val n = input.read(buf, 0, buf.size.coerceAtMost(avail))
+                if (n > 0) baos.write(buf, 0, n)
+            }
+            text = baos.toString("UTF-8")
+            url = extractUrl(text)
+            if (url.isNotBlank()) break
+            Thread.sleep(250)
+        }
+        if (url.isBlank()) {
+            text = baos.toString("UTF-8")
+            url = extractUrl(text)
+        }
+        AppLog.i("banner ${target.name}=${text.replace('\n', ' ').take(240)}")
+        AppLog.i("extracted ${target.name}=$url")
+        return Triple(url, channel, text)
+    }
+
+    private fun startWatchdog() {
+        watchRunning = true
+        watchThread = Thread {
+            val buf = ByteArray(4096)
+            while (watchRunning) {
+                try {
+                    val s = session
+                    val ch = shell
+                    if (s == null || !s.isConnected) {
+                        AppLog.w("tunnel dropped ${target.name}")
+                        publicUrl = ""
+                        lastError = "tunnel_dropped"
+                        break
+                    }
+                    if (ch != null && ch.isConnected) {
+                        val ins = try {
+                            ch.inputStream
+                        } catch (_: Exception) {
+                            null
+                        }
+                        val avail = try {
+                            ins?.available() ?: 0
+                        } catch (_: Exception) {
+                            0
+                        }
+                        if (ins != null && avail > 0) {
+                            val n = ins.read(buf, 0, buf.size.coerceAtMost(avail))
+                            if (n > 0) {
+                                val t = String(buf, 0, n, Charsets.UTF_8)
+                                AppLog.i("ssh ${target.name} ${t.replace('\n', ' ').take(120)}")
+                                val low = t.lowercase()
+                                if (low.contains("closed") || low.contains("expired") ||
+                                    low.contains("offline") || low.contains("denied")
+                                ) {
+                                    publicUrl = ""
+                                    lastError = "tunnel_closed"
+                                    try {
+                                        s.disconnect()
+                                    } catch (_: Exception) {
+                                    }
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    try {
+                        val t0 = System.nanoTime()
+                        s.sendKeepAliveMsg()
+                        rttMs = ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1)
+                    } catch (_: Exception) {
+                    }
+                    Thread.sleep(4000)
+                } catch (_: InterruptedException) {
+                    break
+                } catch (e: Exception) {
+                    AppLog.w("watch ${target.name} ${e.message}")
+                    publicUrl = ""
+                    lastError = "tunnel_dropped"
+                    break
+                }
+            }
+        }.also {
+            it.name = "p2p-watch-${target.name}"
+            it.isDaemon = true
+            it.start()
+        }
+    }
+
+    private fun extractUrl(text: String): String {
+        val found = Regex("https?://[a-zA-Z0-9._\\-]+").findAll(text).map { it.value.trimEnd('/') }
+        for (raw in found) {
+            val url = if (raw.startsWith("http://")) "https://" + raw.removePrefix("http://") else raw
+            if (isTunnelUrl(url)) return url
+        }
+        return ""
+    }
+
+    fun isTunnelUrl(url: String): Boolean = companionIsTunnel(url)
+
+    companion object {
+        const val TAG = "P2PShare"
+        val PROVIDERS = listOf(
+            TunnelTarget("serveo", "serveo", "serveo.net", 22, 80),
+            TunnelTarget("pinggy", "a", "a.pinggy.io", 443, 0),
+            TunnelTarget("lhr", "nokey", "localhost.run", 22, 80),
+            TunnelTarget("lhr2", "nokey", "ssh.localhost.run", 22, 80)
+        )
+        private val REJECT_HOSTS = setOf(
+            "dashboard.pinggy.io",
+            "console.serveo.net",
+            "www.pinggy.io",
+            "pinggy.io",
+            "docs.pinggy.io",
+            "status.pinggy.io",
+            "pinggy.link",
+            "www.localhost.run",
+            "localhost.run",
+            "ssh.localhost.run",
+            "www.serveo.net",
+            "serveo.net",
+            "status.serveo.net",
+            "api.serveo.net",
+            "www.ssh.com",
+            "ssh.com"
+        )
+        private val REJECT_LABELS = setOf(
+            "www", "console", "dashboard", "docs", "status", "api", "admin", "app", "mail"
+        )
+
+        fun companionIsTunnel(url: String): Boolean {
+            return try {
+                val host = URI(url).host?.lowercase() ?: return false
+                if (host in REJECT_HOSTS) return false
+                val parts = host.split('.')
+                if (parts.size < 3) return false
+                if (parts[0] in REJECT_LABELS) return false
+                host.endsWith(".serveousercontent.com") ||
+                    host.endsWith(".serveo.net") ||
+                    host.endsWith(".free.pinggy.net") ||
+                    host.endsWith(".pinggy.net") ||
+                    host.endsWith(".pinggy-free.link") ||
+                    host.endsWith(".run.pinggy-free.link") ||
+                    host.endsWith(".a.pinggy.io") ||
+                    host.endsWith(".pinggy.link") ||
+                    host.endsWith(".free.pinggy.link") ||
+                    host.endsWith(".lhr.life") ||
+                    host.endsWith(".localhost.run")
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/TunnelPool.kt =====
+
+package com.p2psecure.share
+
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
+
+class TunnelPool {
+    private val tunnels = CopyOnWriteArrayList<JavaTunnel>()
+    private val connecting = ConcurrentHashMap.newKeySet<String>()
+    @Volatile var primaryName: String = ""
+        private set
+
+    fun alive(): List<JavaTunnel> = tunnels.filter { it.isAlive() }
+
+    fun aliveUrls(): List<String> = alive().map { it.publicUrl }.distinct()
+
+    fun failover(): JavaTunnel? {
+        val live = alive()
+        if (live.isEmpty()) {
+            primaryName = ""
+            return null
+        }
+        val keep = live.firstOrNull { it.target.name == primaryName }
+        if (keep != null) return keep
+        val pick = live.minByOrNull { it.rttMs.takeIf { it > 0 } ?: Long.MAX_VALUE } ?: live.first()
+        AppLog.i("failover ${primaryName.ifBlank { "-" }} -> ${pick.target.name}")
+        primaryName = pick.target.name
+        return pick
+    }
+
+    fun primary(): JavaTunnel? {
+        val keep = alive().firstOrNull { it.target.name == primaryName }
+        if (keep != null) return keep
+        return failover()
+    }
+
+    fun primaryUrl(): String = primary()?.publicUrl.orEmpty()
+
+    fun isAlive(): Boolean = primary()?.isAlive() == true
+
+    fun lastError(): String {
+        return tunnels.map { it.lastError }.firstOrNull { it.isNotBlank() }.orEmpty()
+    }
+
+    fun connectingNames(): Set<String> = connecting.toSet()
+
+    fun snapshot(): List<TunnelRow> {
+        val now = System.currentTimeMillis()
+        val live = tunnels.associateBy { it.target.name }
+        return JavaTunnel.PROVIDERS.map { p ->
+            val t = live[p.name]
+            when {
+                t != null && t.isAlive() -> TunnelRow(
+                    name = p.name,
+                    state = "up",
+                    url = t.publicUrl,
+                    primary = p.name == primaryName,
+                    ageSec = if (t.startedAt > 0) (now - t.startedAt) / 1000 else 0,
+                    rttMs = t.rttMs
+                )
+                p.name in connecting -> TunnelRow(p.name, "opening", "", false, 0, -1)
+                else -> TunnelRow(p.name, "down", "", false, 0, -1)
+            }
+        }
+    }
+
+    fun ensure(localPort: Int): String {
+        pruneDead()
+        startMissing(localPort)
+        val deadline = System.currentTimeMillis() + 28000
+        while (System.currentTimeMillis() < deadline) {
+            val url = primaryUrl()
+            if (url.isNotBlank()) {
+                AppLog.i("pool primary=${primaryName} urls=${aliveUrls()}")
+                return url
+            }
+            Thread.sleep(300)
+        }
+        val url = primaryUrl()
+        AppLog.i("pool wait done primary=${primaryName} urls=${aliveUrls()}")
+        return url
+    }
+
+    fun refresh(localPort: Int): String {
+        pruneDead()
+        startMissing(localPort)
+        return primaryUrl()
+    }
+
+    fun stop() {
+        for (t in tunnels) {
+            try {
+                t.stop()
+            } catch (_: Exception) {
+            }
+        }
+        tunnels.clear()
+        connecting.clear()
+        primaryName = ""
+    }
+
+    private fun pruneDead() {
+        val dead = tunnels.filter { !it.isAlive() }
+        for (t in dead) {
+            AppLog.w("pool drop ${t.target.name}")
+            try {
+                t.stop()
+            } catch (_: Exception) {
+            }
+            tunnels.remove(t)
+            connecting.remove(t.target.name)
+            if (primaryName == t.target.name) primaryName = ""
+        }
+    }
+
+    private fun startMissing(localPort: Int) {
+        val liveNames = tunnels.filter { it.isAlive() }.map { it.target.name }.toSet()
+        for (p in JavaTunnel.PROVIDERS) {
+            if (p.name in liveNames) continue
+            if (!connecting.add(p.name)) continue
+            Thread {
+                try {
+                    val jt = JavaTunnel(p)
+                    val url = jt.start(localPort)
+                    if (url.isNotBlank()) {
+                        tunnels.add(jt)
+                        AppLog.i("pool add ${p.name} $url n=${alive().size}")
+                    } else {
+                        try {
+                            jt.stop()
+                        } catch (_: Exception) {
+                        }
+                    }
+                } catch (e: Exception) {
+                    AppLog.e("pool ${p.name}", e)
+                } finally {
+                    connecting.remove(p.name)
+                }
+            }.apply {
+                name = "p2p-open-${p.name}"
+                isDaemon = true
+                start()
+            }
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/LocalServer.kt =====
+
+package com.p2psecure.share
+
+import android.content.Context
+import fi.iki.elonen.NanoHTTPD
+import fi.iki.elonen.NanoWSD
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.IOException
+import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
+
+class LocalServer(private val context: Context) {
+    companion object {
+        const val HTTP_PORT = 8080
+    }
+
+    private var server: Front? = null
+
+    fun start() {
+        if (server != null) return
+        server = Front(context, HTTP_PORT).also { it.start(0, false) }
+    }
+
+    fun stop() {
+        server?.stop()
+        server = null
+    }
+
+    class Front(private val context: Context, port: Int) : NanoWSD("0.0.0.0", port) {
+        private val clients = ConcurrentHashMap<String, Socket>()
+        private val pending = ConcurrentHashMap<String, MutableList<String>>()
+
+        override fun openWebSocket(handshake: IHTTPSession): WebSocket = Socket(handshake)
+
+        override fun serveHttp(session: IHTTPSession): Response {
+            if (session.method == Method.OPTIONS) {
+                val res = newFixedLengthResponse(Response.Status.OK, NanoHTTPD.MIME_PLAINTEXT, "")
+                cors(res)
+                return res
+            }
+            val uri = session.uri ?: "/"
+            if (uri == "/favicon.ico") {
+                val res = newFixedLengthResponse(Response.Status.NO_CONTENT, NanoHTTPD.MIME_PLAINTEXT, "")
+                cors(res)
+                return res
+            }
+            if (uri == "/tunnels.json" || uri == "/api/tunnels") {
+                val o = JSONObject()
+                val arr = JSONArray()
+                ShareRuntime.wsUrls().forEach { arr.put(it) }
+                o.put("ws", arr)
+                o.put("link", ShareRuntime.receiverLink)
+                val res = newFixedLengthResponse(Response.Status.OK, "application/json", o.toString())
+                cors(res)
+                res.addHeader("Cache-Control", "no-store")
+                return res
+            }
+            var html = context.assets.open("receiver.html").bufferedReader().use { it.readText() }
+            val arr = JSONArray()
+            ShareRuntime.wsUrls().forEach { arr.put(it) }
+            html = html.replace("const BACKUP_WS = [];", "const BACKUP_WS = $arr;")
+            val res = newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html)
+            cors(res)
+            res.addHeader("Cache-Control", "no-store")
+            res.addHeader("ngrok-skip-browser-warning", "1")
+            return res
+        }
+
+        private fun cors(res: Response) {
+            res.addHeader("Access-Control-Allow-Origin", "*")
+            res.addHeader("Access-Control-Allow-Headers", "*")
+            res.addHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        }
+
+        inner class Socket(handshake: IHTTPSession) : WebSocket(handshake) {
+            private var deviceId: String? = null
+
+            override fun onOpen() {}
+
+            override fun onClose(
+                code: WebSocketFrame.CloseCode?,
+                reason: String?,
+                initiatedByRemote: Boolean
+            ) {
+                val id = deviceId
+                if (id != null) clients.remove(id, this)
+                ConnStats.clients = clients.size
+            }
+
+            override fun onPong(pong: WebSocketFrame?) {}
+
+            override fun onException(exception: IOException) {}
+
+            override fun onMessage(message: WebSocketFrame) {
+                val msg = JSONObject(message.textPayload)
+                when (msg.optString("type")) {
+                    "register" -> {
+                        val id = normalizeId(
+                            msg.optString("device_id").ifBlank {
+                                java.lang.Long.toHexString(SecureRandom().nextLong())
+                            }
+                        )
+                        deviceId = id
+                        clients[id] = this
+                        ConnStats.clients = clients.size
+                        AppLog.i("ws register $id clients=${clients.size}")
+                        send(JSONObject().put("type", "registered").put("device_id", id).toString())
+                        pending.remove(id)?.forEach { send(it) }
+                    }
+                    "ping" -> send(JSONObject().put("type", "pong").toString())
+                    "chunk_nack", "resume" -> {
+                        val sender = deviceId ?: return
+                        val target = normalizeId(msg.optString("target_id"))
+                        if (target.isBlank()) return
+                        val payload = JSONObject(msg.toString())
+                        payload.put("from_id", sender)
+                        payload.remove("target_id")
+                        val dest = clients[target]
+                        if (dest != null && dest.isOpen) dest.send(payload.toString())
+                        else pending.getOrPut(target) { mutableListOf() }.add(payload.toString())
+                    }
+                    else -> {
+                        val sender = deviceId ?: return
+                        val target = normalizeId(msg.optString("target_id"))
+                        if (target.isBlank()) return
+                        val payload = JSONObject(msg.toString())
+                        payload.put("from_id", sender)
+                        payload.remove("target_id")
+                        val text = payload.toString()
+                        val dest = clients[target]
+                        val kind = msg.optString("type")
+                        if (dest != null && dest.isOpen) {
+                            dest.send(text)
+                            if (kind != "chunk" && kind != "chunk_ack") {
+                                AppLog.i("ws fwd $kind $sender -> $target")
+                            }
+                        } else if (kind != "chunk" && kind != "chunk_ack") {
+                            pending.getOrPut(target) { mutableListOf() }.add(text)
+                            AppLog.w("ws queue $kind $sender -> $target")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun normalizeId(raw: String): String =
+    raw.lowercase().replace(Regex("[^0-9a-f]"), "").take(16)
+
+===== FILE: app/src/main/java/com/p2psecure/share/ShareRuntime.kt =====
+
+package com.p2psecure.share
+
+import android.content.Context
+
+object ShareRuntime {
+    @Volatile var receiverLink: String = ""
+    @Volatile var lastError: String = ""
+    private var server: LocalServer? = null
+    @Volatile private var pool: TunnelPool? = null
+
+    fun localRelay(): String = "ws://127.0.0.1:${LocalServer.HTTP_PORT}/ws"
+
+    fun tunnelRows(): List<TunnelRow> = pool?.snapshot() ?: emptyList()
+
+    fun wsUrls(): List<String> {
+        return (pool?.aliveUrls() ?: emptyList()).map { base ->
+            "wss://" + base.removePrefix("https://").removePrefix("http://") + "/ws"
+        }.distinct()
+    }
+
+    fun hasInternetLink(): Boolean {
+        val link = receiverLink
+        val alive = pool?.isAlive() == true
+        return alive &&
+            link.startsWith("https://") &&
+            !link.contains("dashboard.pinggy.io") &&
+            !link.contains("console.serveo.net") &&
+            JavaTunnel.companionIsTunnel(link.removeSuffix("/receiver.html"))
+    }
+
+    @Synchronized
+    fun ensureStarted(context: Context) {
+        val app = context.applicationContext
+        try {
+            if (server == null) {
+                server = LocalServer(app)
+                server?.start()
+                AppLog.i("local server :${LocalServer.HTTP_PORT}")
+            }
+        } catch (e: Exception) {
+            lastError = e.message ?: "server"
+            AppLog.e("server start failed", e)
+            return
+        }
+        val p = pool ?: TunnelPool().also { pool = it }
+        val prev = receiverLink
+        val publicBase = if (p.isAlive()) {
+            p.refresh(LocalServer.HTTP_PORT)
+        } else {
+            lastError = ""
+            p.ensure(LocalServer.HTTP_PORT)
+        }
+        if (publicBase.isBlank()) lastError = p.lastError().ifBlank { "tunnel_failed" }
+        val next = if (publicBase.isNotBlank() && JavaTunnel.companionIsTunnel(publicBase)) {
+            "$publicBase/receiver.html"
+        } else {
+            ""
+        }
+        if (prev.isNotBlank() && next.isNotBlank() && prev != next) {
+            AppLog.w("primary switched $prev -> $next")
+        }
+        receiverLink = next
+        AppLog.i("receiverLink=$receiverLink ready=${hasInternetLink()} backups=${wsUrls().size} err=$lastError")
+    }
+
+    @Synchronized
+    fun stop() {
+        try {
+            pool?.stop()
+        } catch (_: Exception) {
+        }
+        try {
+            server?.stop()
+        } catch (_: Exception) {
+        }
+        pool = null
+        server = null
+        receiverLink = ""
+        AppLog.i("runtime stopped")
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/FileSource.kt =====
+
+package com.p2psecure.share
+
+import android.os.ParcelFileDescriptor
+import android.system.Os
+import java.security.MessageDigest
+
+class FileSource(
+    private val pfd: ParcelFileDescriptor,
+    val size: Long,
+    val name: String
+) {
+    fun read(index: Int, chunkSize: Int): ByteArray {
+        val offset = index.toLong() * chunkSize
+        if (offset >= size) return ByteArray(0)
+        val len = minOf(chunkSize.toLong(), size - offset).toInt()
+        val buf = ByteArray(len)
+        var got = 0
+        while (got < len) {
+            val n = Os.pread(pfd.fileDescriptor, buf, got, len - got, offset + got)
+            if (n <= 0) break
+            got += n
+        }
+        return if (got == len) buf else buf.copyOf(got)
+    }
+
+    fun sha256(chunkSize: Int): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(chunkSize)
+        var off = 0L
+        while (off < size) {
+            val len = minOf(buf.size.toLong(), size - off).toInt()
+            var got = 0
+            while (got < len) {
+                val n = Os.pread(pfd.fileDescriptor, buf, got, len - got, off + got)
+                if (n <= 0) break
+                got += n
+            }
+            if (got <= 0) break
+            md.update(buf, 0, got)
+            off += got
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    fun close() {
+        try {
+            pfd.close()
+        } catch (_: Exception) {
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/SenderClient.kt =====
+
+package com.p2psecure.share
+
+import android.util.Base64
+import org.java_websocket.client.WebSocketClient
+import org.java_websocket.handshake.ServerHandshake
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.URI
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+
+class SenderClient(
+    private val relay: String,
+    targetRaw: String,
+    private val source: FileSource,
+    private val onStatus: (String) -> Unit,
+    private val onProgress: (Int) -> Unit
+) {
+    private val target = normalizeId(targetRaw)
+    private val senderId = java.lang.Long.toHexString(System.nanoTime()).padStart(16, 'a').takeLast(16)
+    private val crypto = CryptoEngine()
+    private val incoming = LinkedBlockingQueue<JSONObject>()
+    private val acks = ConcurrentHashMap<Int, Boolean>()
+    private val ackAt = ConcurrentHashMap<Int, Long>()
+    @Volatile private var client: WebSocketClient? = null
+    @Volatile private var accepted = false
+    @Volatile private var gotKey = false
+    private val fileName = source.name
+    private val fileSize = source.size
+    private val total = if (fileSize <= 0L) 0 else ((fileSize + CHUNK - 1) / CHUNK).toInt()
+    private var fileHash = ""
+
+    fun run() {
+        ConnStats.reset()
+        ConnStats.phase = "connecting"
+        ConnStats.fileName = fileName
+        ConnStats.fileSize = fileSize
+        if (target.length < 8) throw IllegalStateException("bad_id")
+        if (fileSize <= 0L || total <= 0) throw IllegalStateException("empty_file")
+        val tStart = System.currentTimeMillis()
+        var lastMark = tStart
+        var lastBytes = 0L
+        var lastProgress = tStart
+        try {
+            AppLog.i("hashing $fileName $fileSize")
+            ConnStats.phase = "hashing"
+            fileHash = source.sha256(CHUNK)
+            AppLog.i("hash $fileHash")
+            while (true) {
+                try {
+                    ensureSocket()
+                    waitAccept()
+                    ConnStats.phase = "sending"
+                    onStatus("sending")
+                    pump()
+                    val elapsed = (System.currentTimeMillis() - tStart).coerceAtLeast(1)
+                    ConnStats.speedBps = fileSize * 1000.0 / elapsed
+                    AppLog.i("sent $fileSize bytes in ${elapsed}ms ${ConnStats.speedText()}")
+                    sendJson(
+                        JSONObject()
+                            .put("type", "transfer_complete")
+                            .put("target_id", target)
+                            .put("final_hash", fileHash)
+                    )
+                    ConnStats.phase = "done"
+                    ConnStats.sentBytes = fileSize
+                    onStatus("done")
+                    try {
+                        client?.close()
+                    } catch (_: Exception) {
+                    }
+                    return
+                } catch (e: RejectedException) {
+                    ConnStats.phase = "rejected"
+                    onStatus("rejected")
+                    return
+                } catch (e: Exception) {
+                    AppLog.w("sender drop ${e.message} — resume")
+                    ConnStats.phase = "resume"
+                    dropSocket()
+                    if (System.currentTimeMillis() - lastProgress > 180000 && acks.isEmpty()) {
+                        throw IllegalStateException("stalled")
+                    }
+                    Thread.sleep(900)
+                } finally {
+                    val now = System.currentTimeMillis()
+                    val dt = now - lastMark
+                    if (dt >= 400) {
+                        val db = ConnStats.sentBytes - lastBytes
+                        if (dt > 0) ConnStats.speedBps = db * 1000.0 / dt
+                        lastMark = now
+                        lastBytes = ConnStats.sentBytes
+                        if (db > 0) lastProgress = now
+                    }
+                }
+            }
+        } finally {
+            source.close()
+        }
+    }
+
+    private fun ensureSocket() {
+        val cur = client
+        if (cur != null && cur.isOpen) return
+        dropSocket()
+        val headers = mapOf("ngrok-skip-browser-warning" to "1")
+        val ws = object : WebSocketClient(URI(relay), headers) {
+            override fun onOpen(handshakedata: ServerHandshake) {
+                connectionLostTimeout = 0
+                send(
+                    JSONObject()
+                        .put("type", "register")
+                        .put("mode", "sender")
+                        .put("device_id", senderId)
+                        .put("public_key", crypto.pubJwk())
+                        .toString()
+                )
+            }
+            override fun onMessage(message: String) {
+                val msg = JSONObject(message)
+                when (msg.optString("type")) {
+                    "chunk_ack" -> {
+                        val idx = msg.optInt("index")
+                        acks[idx] = true
+                        val sent = ackAt.remove(idx)
+                        if (sent != null) {
+                            ConnStats.rttMs = System.currentTimeMillis() - sent
+                            ConnStats.acksOk += 1
+                        }
+                    }
+                    "chunk_nack" -> {
+                        val idx = msg.optInt("index")
+                        acks.remove(idx)
+                        ConnStats.acksRetry += 1
+                        AppLog.w("nack $idx")
+                        incoming.offer(msg)
+                    }
+                    "resume" -> incoming.offer(msg)
+                    else -> incoming.offer(msg)
+                }
+            }
+            override fun onClose(code: Int, reason: String, remote: Boolean) {
+                AppLog.w("sender ws closed $code $reason")
+            }
+            override fun onError(ex: Exception) {
+                AppLog.w("sender ws ${ex.message}")
+            }
+        }
+        AppLog.i("sender connect $relay target=$target")
+        if (!ws.connectBlocking(20, TimeUnit.SECONDS) || !ws.isOpen) {
+            throw IllegalStateException("ws_connect")
+        }
+        client = ws
+        waitFor("registered", 20)
+        sendJson(JSONObject().put("type", "public_key").put("target_id", target).put("public_key", crypto.pubJwk()))
+    }
+
+    private fun waitAccept() {
+        val pub = crypto.pubJwk()
+        fun sendRequest() {
+            sendJson(
+                JSONObject()
+                    .put("type", "transfer_request")
+                    .put("target_id", target)
+                    .put("filename", fileName)
+                    .put("file_size", fileSize)
+                    .put("total_chunks", total)
+                    .put("chunk_size", CHUNK)
+                    .put("file_hash", fileHash)
+                    .put("public_key", pub)
+            )
+            AppLog.i("sender request $fileName $fileSize -> $target acked=${acks.size}")
+        }
+        sendRequest()
+        if (accepted) {
+            val drainEnd = System.currentTimeMillis() + 4000
+            while (System.currentTimeMillis() < drainEnd) {
+                val msg = incoming.poll(200, TimeUnit.MILLISECONDS) ?: continue
+                handleControl(msg)
+                if (msg.optString("type") == "resume") return
+            }
+            return
+        }
+        ConnStats.phase = "waiting"
+        onStatus("waiting")
+        val waitEnd = System.currentTimeMillis() + 180000
+        var lastAsk = System.currentTimeMillis()
+        while (!accepted) {
+            if (System.currentTimeMillis() > waitEnd) throw IllegalStateException("timeout")
+            if (client?.isOpen != true) throw IllegalStateException("ws_closed")
+            val msg = incoming.poll(3, TimeUnit.SECONDS)
+            if (msg == null) {
+                if (System.currentTimeMillis() - lastAsk > 8000) {
+                    sendRequest()
+                    lastAsk = System.currentTimeMillis()
+                }
+                continue
+            }
+            when (msg.optString("type")) {
+                "public_key" -> {
+                    if (!gotKey) {
+                        crypto.derive(msg.getString("public_key"))
+                        gotKey = true
+                        AppLog.i("sender got peer key")
+                    }
+                }
+                "transfer_response" -> {
+                    if (!msg.optBoolean("accepted")) throw RejectedException()
+                    if (msg.has("public_key") && !gotKey) {
+                        crypto.derive(msg.getString("public_key"))
+                        gotKey = true
+                    }
+                    if (gotKey) accepted = true
+                }
+                "resume" -> applyResume(msg)
+            }
+        }
+        if (!gotKey) throw IllegalStateException("no_key")
+    }
+
+    private fun pump() {
+        val window = 32
+        while (true) {
+            if (client?.isOpen != true) throw IllegalStateException("ws_closed")
+            drainControl()
+            val missing = ArrayList<Int>()
+            var i = 0
+            while (i < total) {
+                if (acks[i] != true) missing.add(i)
+                i++
+            }
+            if (missing.isEmpty()) {
+                onProgress(100)
+                return
+            }
+            val done = total - missing.size
+            ConnStats.sentBytes = (done.toLong() * CHUNK).coerceAtMost(fileSize)
+            onProgress((done * 100) / total)
+            val inFlight = missing.count { ackAt.containsKey(it) && acks[it] != true }
+            var sentNow = 0
+            for (idx in missing) {
+                if (sentNow + maxOf(inFlight, 0) >= window) break
+                val last = ackAt[idx]
+                if (last != null && System.currentTimeMillis() - last < 2500) continue
+                if (last != null) ConnStats.acksRetry += 1
+                sendChunk(idx)
+                sentNow += 1
+            }
+            val deadline = System.currentTimeMillis() + 3500
+            while (System.currentTimeMillis() < deadline) {
+                if (client?.isOpen != true) throw IllegalStateException("ws_closed")
+                val msg = incoming.poll(80, TimeUnit.MILLISECONDS) ?: continue
+                handleControl(msg)
+                if (acks.size >= total && (0 until total).none { acks[it] != true }) return
+            }
+        }
+    }
+
+    private fun drainControl() {
+        while (true) {
+            val msg = incoming.poll() ?: return
+            handleControl(msg)
+        }
+    }
+
+    private fun handleControl(msg: JSONObject) {
+        when (msg.optString("type")) {
+            "resume" -> applyResume(msg)
+            "chunk_nack" -> {
+                val idx = msg.optInt("index")
+                acks.remove(idx)
+                sendChunk(idx)
+            }
+            "public_key" -> {
+                if (!gotKey && msg.has("public_key")) {
+                    crypto.derive(msg.getString("public_key"))
+                    gotKey = true
+                }
+            }
+            "transfer_response" -> {
+                if (!msg.optBoolean("accepted")) throw RejectedException()
+                accepted = true
+            }
+        }
+    }
+
+    private fun applyResume(msg: JSONObject) {
+        val bitsB64 = msg.optString("have_bits")
+        if (bitsB64.isNotBlank()) {
+            val raw = Base64.decode(bitsB64, Base64.NO_WRAP)
+            var i = 0
+            while (i < total) {
+                val on = i < raw.size * 8 && (raw[i shr 3].toInt() and (1 shl (i and 7))) != 0
+                if (on) acks[i] = true else acks.remove(i)
+                i++
+            }
+        }
+        val have = msg.optJSONArray("have") ?: JSONArray()
+        for (i in 0 until have.length()) acks[have.optInt(i)] = true
+        val miss = msg.optJSONArray("missing")
+        if (miss != null) {
+            for (i in 0 until miss.length()) acks.remove(miss.optInt(i))
+        }
+        AppLog.i("resume have=${have.length()} missing=${miss?.length() ?: -1} bits=${bitsB64.isNotBlank()}")
+        sendJson(
+            JSONObject()
+                .put("type", "resume_ack")
+                .put("target_id", target)
+                .put("next", (0 until total).firstOrNull { acks[it] != true } ?: total)
+        )
+    }
+
+    private fun sendChunk(index: Int) {
+        val ws = client ?: throw IllegalStateException("ws_closed")
+        val chunk = source.read(index, CHUNK)
+        if (chunk.isEmpty()) return
+        val nonce = CryptoEngine.randomNonce()
+        val enc = crypto.encrypt(chunk, nonce)
+        ackAt[index] = System.currentTimeMillis()
+        val end = index.toLong() * CHUNK + chunk.size
+        ws.send(
+            JSONObject()
+                .put("type", "chunk")
+                .put("target_id", target)
+                .put("index", index)
+                .put("data", Base64.encodeToString(enc, Base64.NO_WRAP))
+                .put("nonce", Base64.encodeToString(nonce, Base64.NO_WRAP))
+                .put("chunk_hash", sha256(chunk))
+                .put("is_last", end >= fileSize)
+                .toString()
+        )
+    }
+
+    private fun sendJson(o: JSONObject) {
+        val ws = client ?: throw IllegalStateException("ws_closed")
+        ws.send(o.toString())
+    }
+
+    private fun dropSocket() {
+        try {
+            client?.close()
+        } catch (_: Exception) {
+        }
+        client = null
+    }
+
+    private fun waitFor(type: String, sec: Long): JSONObject {
+        val held = ArrayList<JSONObject>()
+        val end = System.currentTimeMillis() + sec * 1000
+        try {
+            while (System.currentTimeMillis() < end) {
+                val msg = incoming.poll(1, TimeUnit.SECONDS) ?: continue
+                if (msg.optString("type") == type) return msg
+                held.add(msg)
+            }
+            throw IllegalStateException("timeout")
+        } finally {
+            held.forEach { incoming.offer(it) }
+        }
+    }
+
+    private class RejectedException : RuntimeException("rejected")
+
+    companion object {
+        const val CHUNK = 49152
+        private fun sha256(data: ByteArray): String {
+            val d = MessageDigest.getInstance("SHA-256").digest(data)
+            return d.joinToString("") { "%02x".format(it) }
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/TransferService.kt =====
+
+package com.p2psecure.share
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Intent
+import android.os.Build
+import android.os.IBinder
+import android.os.PowerManager
+import androidx.core.app.NotificationCompat
+
+class TransferService : Service() {
+    @Volatile private var running = false
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        if (Build.VERSION.SDK_INT >= 26) {
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(
+                NotificationChannel("transfer", getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW)
+            )
+        }
+        val open = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val n = NotificationCompat.Builder(this, "transfer")
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.notif_running))
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(open)
+            .setOngoing(true)
+            .build()
+        startForeground(7, n)
+        try {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "p2p:tunnel").also {
+                it.setReferenceCounted(false)
+                it.acquire()
+            }
+        } catch (e: Exception) {
+            AppLog.w("wakelock ${e.message}")
+        }
+        running = true
+        Thread {
+            while (running) {
+                try {
+                    ShareRuntime.ensureStarted(applicationContext)
+                    AppLog.i("service link=${ShareRuntime.receiverLink} err=${ShareRuntime.lastError}")
+                    if (ShareRuntime.hasInternetLink()) {
+                        Thread.sleep(8000)
+                    } else {
+                        Thread.sleep(4000)
+                    }
+                } catch (_: InterruptedException) {
+                    break
+                } catch (_: Exception) {
+                    try {
+                        Thread.sleep(6000)
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }.apply {
+            name = "p2p-service"
+            isDaemon = true
+            start()
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+
+    override fun onDestroy() {
+        running = false
+        try {
+            wakeLock?.release()
+        } catch (_: Exception) {
+        }
+        wakeLock = null
+        super.onDestroy()
+        ShareRuntime.stop()
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/SetupActivity.kt =====
+
+package com.p2psecure.share
+
+import android.Manifest
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ProgressBar
+import android.widget.TextView
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import kotlin.concurrent.thread
+
+class SetupActivity : AppCompatActivity() {
+    private lateinit var prefs: Prefs
+    private lateinit var tokenBox: EditText
+    private lateinit var statusView: TextView
+    private lateinit var progress: ProgressBar
+    private lateinit var approveBtn: Button
+
+    private val requestPerms = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { installAndRestart() }
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleHelper.wrap(newBase))
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        prefs = Prefs(this)
+        if (prefs.setupDone) {
+            goMain()
+            return
+        }
+        setContentView(R.layout.activity_setup)
+        try {
+            ThemeHelper.apply(this, findViewById(R.id.setupRoot), prefs.theme)
+        } catch (_: Exception) {
+        }
+        tokenBox = findViewById(R.id.tokenBox)
+        statusView = findViewById(R.id.setupStatus)
+        progress = findViewById(R.id.setupProgress)
+        approveBtn = findViewById(R.id.approveBtn)
+        approveBtn.setOnClickListener { onApprove() }
+    }
+
+    private fun onApprove() {
+        prefs.ngrokToken = tokenBox.text.toString().trim()
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            needed += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (needed.isEmpty()) installAndRestart() else requestPerms.launch(needed.toTypedArray())
+    }
+
+    private fun installAndRestart() {
+        approveBtn.isEnabled = false
+        progress.visibility = View.VISIBLE
+        statusView.setText(R.string.setup_installing)
+        thread {
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                prefs.depsInstalled = true
+                prefs.setupDone = true
+                statusView.setText(R.string.setup_restarting)
+                goMain()
+            }
+        }
+    }
+
+    private fun goMain() {
+        try {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            )
+        } catch (_: Exception) {
+        }
+        finish()
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/MainActivity.kt =====
+
+package com.p2psecure.share
+
+import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.OpenableColumns
+import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.ScrollView
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
+import kotlin.concurrent.thread
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var prefs: Prefs
+    private var publicLink = ""
+    private var pickedUri: Uri? = null
+    private var pickedName = ""
+    private lateinit var linkBox: EditText
+    private lateinit var idBox: EditText
+    private lateinit var fileNameView: TextView
+    private lateinit var statusView: TextView
+    private lateinit var progress: ProgressBar
+    private lateinit var root: View
+    private lateinit var monitorPanel: View
+    private lateinit var monitorSummary: TextView
+    private lateinit var monitorTunnels: TextView
+    private lateinit var monitorLogs: TextView
+    private lateinit var monitorLogScroll: ScrollView
+    @Volatile private var sending = false
+    private val ui = Handler(Looper.getMainLooper())
+    private val refresh = object : Runnable {
+        override fun run() {
+            if (!isFinishing && ::linkBox.isInitialized) {
+                applyLink(ShareRuntime.receiverLink)
+                refreshMonitor()
+            }
+            if (!isFinishing) ui.postDelayed(this, 1000)
+        }
+    }
+
+    private val pickFile = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: SecurityException) {
+            }
+            pickedUri = uri
+            pickedName = queryName(uri)
+            fileNameView.text = pickedName
+            startSend()
+        }
+    }
+
+    private val requestPerms = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { startBackend() }
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LocaleHelper.wrap(newBase))
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        prefs = Prefs(this)
+        if (!prefs.setupDone) {
+            startActivity(
+                Intent(this, SetupActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            )
+            finish()
+            return
+        }
+        setContentView(R.layout.activity_main)
+        root = findViewById(R.id.root)
+        monitorPanel = findViewById(R.id.monitorPanel)
+        try {
+            ThemeHelper.apply(this, root, prefs.theme)
+        } catch (_: Exception) {
+        }
+        linkBox = findViewById(R.id.linkBox)
+        idBox = findViewById(R.id.idBox)
+        fileNameView = findViewById(R.id.fileName)
+        statusView = findViewById(R.id.status)
+        progress = findViewById(R.id.progress)
+        monitorSummary = findViewById(R.id.monitorSummary)
+        monitorTunnels = findViewById(R.id.monitorTunnels)
+        monitorLogs = findViewById(R.id.monitorLogs)
+        monitorLogScroll = findViewById(R.id.monitorLogScroll)
+
+        findViewById<Button>(R.id.settingsBtn).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+        findViewById<Button>(R.id.monitorBtn).setOnClickListener { toggleMonitor() }
+        findViewById<Button>(R.id.closeMonitorBtn).setOnClickListener { showMonitor(false) }
+        findViewById<Button>(R.id.copyBtn).setOnClickListener { copyLink() }
+        findViewById<Button>(R.id.shareBtn).setOnClickListener { shareLink() }
+        findViewById<Button>(R.id.chooseBtn).setOnClickListener { pickFile.launch(arrayOf("*/*")) }
+        findViewById<Button>(R.id.againBtn).setOnClickListener { resetFlow() }
+        findViewById<Button>(R.id.closeBtn).setOnClickListener {
+            stopService(Intent(this, TransferService::class.java))
+            finish()
+        }
+        findViewById<Button>(R.id.copyLogsBtn).setOnClickListener {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("logs", AppLog.snapshot()))
+            toast(getString(R.string.logs_copied))
+        }
+        findViewById<Button>(R.id.clearLogsBtn).setOnClickListener {
+            AppLog.clear()
+            refreshMonitor()
+        }
+
+        askPermsAndStart()
+        ui.post(refresh)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::root.isInitialized) {
+            try {
+                ThemeHelper.apply(this, root, prefs.theme)
+            } catch (_: Exception) {
+            }
+        }
+        if (::linkBox.isInitialized) applyLink(ShareRuntime.receiverLink)
+    }
+
+    @Deprecated("Use OnBackPressedDispatcher")
+    override fun onBackPressed() {
+        if (::monitorPanel.isInitialized && monitorPanel.visibility == View.VISIBLE) {
+            showMonitor(false)
+            return
+        }
+        super.onBackPressed()
+    }
+
+    private fun toggleMonitor() {
+        showMonitor(!(::monitorPanel.isInitialized && monitorPanel.visibility == View.VISIBLE))
+    }
+
+    private fun showMonitor(open: Boolean) {
+        if (!::monitorPanel.isInitialized) return
+        monitorPanel.visibility = if (open) View.VISIBLE else View.GONE
+        if (open) refreshMonitor()
+    }
+
+    override fun onDestroy() {
+        ui.removeCallbacks(refresh)
+        super.onDestroy()
+    }
+
+    private fun askPermsAndStart() {
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 33 && checkSelf(Manifest.permission.POST_NOTIFICATIONS)) {
+            needed += Manifest.permission.POST_NOTIFICATIONS
+        }
+        if (needed.isEmpty()) startBackend() else requestPerms.launch(needed.toTypedArray())
+    }
+
+    private fun checkSelf(p: String) =
+        ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED
+
+    private fun startBackend() {
+        statusView.setText(R.string.status_starting)
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, TransferService::class.java))
+        } catch (_: Exception) {
+        }
+        thread {
+            try {
+                ShareRuntime.ensureStarted(applicationContext)
+                runOnUiThread {
+                    if (!isFinishing && ::linkBox.isInitialized) applyLink(ShareRuntime.receiverLink)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    if (!isFinishing && ::statusView.isInitialized) {
+                        statusView.text = e.message ?: getString(R.string.status_no_link)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun applyLink(link: String) {
+        val ok = ShareRuntime.hasInternetLink()
+        publicLink = if (ok) ShareRuntime.receiverLink.ifBlank { link } else ""
+        if (ok && publicLink.isNotBlank()) {
+            val prev = linkBox.text.toString()
+            if (prev != publicLink) {
+                linkBox.setText(publicLink)
+                if (prev.startsWith("https://") && prev != publicLink) {
+                    toast(getString(R.string.link_changed))
+                }
+            }
+            if (!sending) {
+                statusView.setText(R.string.status_ready)
+            }
+        } else {
+            linkBox.setText(getString(R.string.no_link))
+            val err = ShareRuntime.lastError
+            statusView.text = if (err.isNotBlank()) {
+                getString(R.string.status_no_link) + "\n" + err
+            } else {
+                getString(R.string.status_starting)
+            }
+        }
+        if (::monitorSummary.isInitialized) refreshMonitor()
+    }
+
+    private fun refreshMonitor() {
+        if (!::monitorSummary.isInitialized) return
+        val rtt = ConnStats.rttMs
+        val quality = when {
+            rtt <= 0 -> "--"
+            rtt < 80 -> getString(R.string.quality_excellent)
+            rtt < 180 -> getString(R.string.quality_good)
+            rtt < 400 -> getString(R.string.quality_fair)
+            else -> getString(R.string.quality_poor)
+        }
+        val sent = ConnStats.sentBytes
+        val total = ConnStats.fileSize
+        val pct = if (total > 0) (sent * 100 / total) else 0
+        monitorSummary.text = buildString {
+            appendLine("${getString(R.string.monitor_phase)}: ${ConnStats.phase}")
+            appendLine("${getString(R.string.monitor_speed)}: ${ConnStats.speedText()}")
+            appendLine("RTT ${if (rtt > 0) "${rtt}ms" else "--"}  $quality")
+            if (total > 0) appendLine("${ConnStats.fileName}: $pct%  $sent / $total")
+            appendLine("ACK ${ConnStats.acksOk}  retry ${ConnStats.acksRetry}  WS ${ConnStats.clients}")
+        }
+        monitorTunnels.text = ShareRuntime.tunnelRows().joinToString("\n") { row ->
+            val st = when (row.state) {
+                "up" -> getString(R.string.tunnel_up)
+                "opening" -> getString(R.string.tunnel_opening)
+                else -> getString(R.string.tunnel_down)
+            }
+            val mark = if (row.primary) " ${getString(R.string.tunnel_primary)}" else ""
+            val rttTxt = if (row.rttMs > 0) " ${row.rttMs}ms" else ""
+            val host = row.url.removePrefix("https://").removePrefix("http://").take(36)
+            "${row.name}: $st$mark$rttTxt${if (host.isNotBlank()) "\n  $host" else ""}"
+        }.ifBlank { getString(R.string.status_starting) }
+        val snap = AppLog.snapshot()
+        if (monitorLogs.text.toString() != snap) {
+            monitorLogs.text = snap
+            monitorLogScroll.post { monitorLogScroll.fullScroll(View.FOCUS_DOWN) }
+        }
+    }
+
+    private fun copyLink() {
+        if (!ShareRuntime.hasInternetLink() || publicLink.isBlank()) {
+            toast(getString(R.string.no_link)); return
+        }
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("link", publicLink))
+        toast(getString(R.string.copy))
+    }
+
+    private fun shareLink() {
+        if (!ShareRuntime.hasInternetLink() || publicLink.isBlank()) {
+            toast(getString(R.string.no_link)); return
+        }
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, publicLink)
+        }, getString(R.string.share)))
+    }
+
+    private fun startSend() {
+        val id = idBox.text.toString().trim()
+        val uri = pickedUri
+        if (id.isEmpty()) { toast(getString(R.string.no_id)); return }
+        if (uri == null) { toast(getString(R.string.no_file)); return }
+        if (!ShareRuntime.hasInternetLink()) { toast(getString(R.string.no_link)); return }
+        val pfd = try {
+            contentResolver.openFileDescriptor(uri, "r")
+        } catch (_: Exception) {
+            null
+        }
+        if (pfd == null) { toast(getString(R.string.no_file)); return }
+        val size = querySize(uri).takeIf { it > 0 } ?: pfd.statSize
+        if (size <= 0L) {
+            try { pfd.close() } catch (_: Exception) {}
+            toast(getString(R.string.no_file)); return
+        }
+        sending = true
+        statusView.setText(R.string.status_hashing)
+        val relay = ShareRuntime.localRelay()
+        try {
+            ContextCompat.startForegroundService(this, Intent(this, TransferService::class.java))
+        } catch (_: Exception) {
+        }
+        val source = FileSource(pfd, size, pickedName)
+        thread {
+            try {
+                SenderClient(relay, normalizeId(id).ifBlank { id }, source,
+                    onStatus = { code ->
+                        runOnUiThread {
+                            statusView.text = when (code) {
+                                "waiting" -> getString(R.string.status_waiting)
+                                "sending", "resume" -> getString(R.string.status_sending)
+                                "done" -> getString(R.string.status_done)
+                                "rejected" -> getString(R.string.status_rejected)
+                                else -> code
+                            }
+                            if (code == "done" || code == "rejected" || code.startsWith("error:")) {
+                                sending = false
+                            }
+                            if (code == "done") {
+                                AlertDialog.Builder(this)
+                                    .setMessage(R.string.status_done)
+                                    .setPositiveButton(R.string.again) { _, _ -> resetFlow() }
+                                    .setNegativeButton(R.string.close) { _, _ -> finish() }
+                                    .show()
+                            }
+                        }
+                    },
+                    onProgress = { p -> runOnUiThread { progress.progress = p } }
+                ).run()
+            } catch (e: Exception) {
+                sending = false
+                ConnStats.phase = "error"
+                AppLog.e("send failed", e)
+                try { source.close() } catch (_: Exception) {}
+                runOnUiThread { statusView.text = e.message }
+            }
+        }
+    }
+
+    private fun resetFlow() {
+        pickedUri = null
+        pickedName = ""
+        idBox.setText("")
+        fileNameView.text = ""
+        progress.progress = 0
+        sending = false
+        statusView.setText(R.string.status_ready)
+    }
+
+    private fun queryName(uri: Uri): String {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) return it.getString(0)
+        }
+        return "file.bin"
+    }
+
+    private fun querySize(uri: Uri): Long {
+        contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use {
+            if (it.moveToFirst() && !it.isNull(0)) return it.getLong(0)
+        }
+        return -1L
+    }
+
+    private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/SettingsActivity.kt =====
+
+package com.p2psecure.share
+
+import android.content.Intent
+import android.os.Bundle
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.EditText
+import android.widget.Spinner
+import androidx.appcompat.app.AppCompatActivity
+
+class SettingsActivity : AppCompatActivity() {
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(LocaleHelper.wrap(newBase))
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val prefs = Prefs(this)
+        setContentView(R.layout.activity_settings)
+        try {
+            ThemeHelper.apply(this, findViewById(R.id.settingsRoot), prefs.theme)
+        } catch (_: Exception) {
+        }
+        val langSpinner = findViewById<Spinner>(R.id.langSpinner)
+        val themeSpinner = findViewById<Spinner>(R.id.themeSpinner)
+        val tokenBox = findViewById<EditText>(R.id.tokenBox)
+        val langs = arrayOf("ar", "en")
+        val themes = arrayOf("dark", "blue", "green")
+        langSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, langs)
+        themeSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, themes)
+        langSpinner.setSelection(langs.indexOf(prefs.language).coerceAtLeast(0))
+        themeSpinner.setSelection(themes.indexOf(prefs.theme).coerceAtLeast(0))
+        tokenBox.setText(prefs.ngrokToken)
+        findViewById<Button>(R.id.privacyBtn).setOnClickListener {
+            val html = assets.open("privacy_policy.html").bufferedReader().readText()
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle(R.string.privacy)
+                .setMessage(html.replace(Regex("<[^>]+>"), " ").trim())
+                .setPositiveButton(android.R.string.ok, null)
+                .show()
+        }
+        findViewById<Button>(R.id.saveBtn).setOnClickListener {
+            prefs.language = langSpinner.selectedItem as String
+            prefs.theme = themeSpinner.selectedItem as String
+            prefs.ngrokToken = tokenBox.text.toString().trim()
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            )
+            finish()
+        }
+    }
+}
+
+===== FILE: app/src/main/java/com/p2psecure/share/NgrokHelper.kt =====
+
+package com.p2psecure.share
+
+import android.content.Context
+import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.TimeUnit
+
+class NgrokHelper(private val context: Context) {
+    private var process: Process? = null
+    var publicUrl: String = ""
+        private set
+    var lastError: String = ""
+        private set
+
+    fun install(): Boolean = true
+
+    fun start(token: String, port: Int): String {
+        return try {
+            stop()
+            lastError = ""
+            publicUrl = ""
+            if (token.isBlank()) {
+                lastError = "missing_token"
+                return ""
+            }
+            val bin = binaryFile() ?: return ""
+            val home = context.filesDir
+            fun proc(vararg args: String): Process {
+                val pb = ProcessBuilder(listOf(bin.absolutePath) + args)
+                    .directory(home)
+                    .redirectErrorStream(true)
+                pb.environment()["HOME"] = home.absolutePath
+                pb.environment()["TMPDIR"] = context.cacheDir.absolutePath
+                return pb.start()
+            }
+            try {
+                proc("config", "add-authtoken", token).waitFor(8, TimeUnit.SECONDS)
+            } catch (_: Exception) {
+            }
+            process = proc("http", port.toString(), "--authtoken", token, "--log=stdout")
+            for (i in 0 until 12) {
+                Thread.sleep(400)
+                val url = apiUrl()
+                if (url.isNotBlank()) {
+                    publicUrl = url
+                    return url
+                }
+                if (process?.isAlive == false) break
+            }
+            lastError = "tunnel_timeout"
+            stop()
+            ""
+        } catch (e: Exception) {
+            lastError = e.message ?: "start_failed"
+            stop()
+            ""
+        }
+    }
+
+    fun stop() {
+        try {
+            process?.destroy()
+        } catch (_: Exception) {
+        }
+        process = null
+    }
+
+    private fun binaryFile(): File? {
+        val native = File(context.applicationInfo.nativeLibraryDir, "libngrok.so")
+        if (native.exists() && native.length() > 1000) return native
+        lastError = "native_missing"
+        return null
+    }
+
+    private fun apiUrl(): String {
+        return try {
+            val conn = URL("http://127.0.0.1:4040/api/tunnels").openConnection() as HttpURLConnection
+            conn.connectTimeout = 800
+            conn.readTimeout = 800
+            val body = conn.inputStream.bufferedReader().readText()
+            val arr = JSONObject(body).getJSONArray("tunnels")
+            for (i in 0 until arr.length()) {
+                val u = arr.getJSONObject(i).optString("public_url")
+                if (u.startsWith("https://")) return u
+            }
+            ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+}
+
+===== FILE: app/src/main/res/layout/activity_setup.xml =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/setupRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <TextView
+            android:id="@+id/setupTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/setup_title"
+            android:textColor="@color/text"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:tag="muted"
+            android:text="@string/setup_msg"
+            android:textColor="@color/muted" />
+
+        <EditText
+            android:id="@+id/tokenBox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@color/card"
+            android:hint="@string/setup_token_hint"
+            android:inputType="textVisiblePassword"
+            android:minHeight="56dp"
+            android:padding="12dp"
+            android:textColor="@color/text"
+            android:textColorHint="@color/muted"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/setupStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="18dp"
+            android:textColor="@color/text" />
+
+        <ProgressBar
+            android:id="@+id/setupProgress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:indeterminate="true"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/approveBtn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/setup_approve" />
+    </LinearLayout>
+</ScrollView>
+
+===== FILE: app/src/main/res/layout/activity_main.xml =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg">
+
+    <ScrollView
+        android:id="@+id/mainScroll"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="20dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/title"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/app_name"
+                    android:textColor="@color/text"
+                    android:textSize="22sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/monitorBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:text="@string/monitor" />
+
+                <Button
+                    android:id="@+id/settingsBtn"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/settings" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="20dp"
+                android:tag="muted"
+                android:text="@string/share_link"
+                android:textColor="@color/muted" />
+
+            <EditText
+                android:id="@+id/linkBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@color/card"
+                android:gravity="center"
+                android:inputType="none"
+                android:minHeight="56dp"
+                android:padding="12dp"
+                android:textColor="@color/text"
+                android:textIsSelectable="true" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/copyBtn"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/copy" />
+
+                <Button
+                    android:id="@+id/shareBtn"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:text="@string/share" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="24dp"
+                android:tag="muted"
+                android:text="@string/receiver_id"
+                android:textColor="@color/muted" />
+
+            <EditText
+                android:id="@+id/idBox"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@color/card"
+                android:gravity="center"
+                android:hint="@string/id_hint"
+                android:inputType="text"
+                android:minHeight="56dp"
+                android:padding="12dp"
+                android:textColor="@color/text"
+                android:textColorHint="@color/muted" />
+
+            <Button
+                android:id="@+id/chooseBtn"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/choose_file" />
+
+            <TextView
+                android:id="@+id/fileName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="@color/text" />
+
+            <TextView
+                android:id="@+id/status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:gravity="center"
+                android:text="@string/status_starting"
+                android:textColor="@color/text"
+                android:textStyle="bold" />
+
+            <ProgressBar
+                android:id="@+id/progress"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:max="100" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="18dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/againBtn"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="@string/again" />
+
+                <Button
+                    android:id="@+id/closeBtn"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:text="@string/close" />
+            </LinearLayout>
+        </LinearLayout>
+    </ScrollView>
+
+    <LinearLayout
+        android:id="@+id/monitorPanel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/card"
+        android:clickable="true"
+        android:focusable="true"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/monitor_title"
+                android:textColor="@color/text"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/closeMonitorBtn"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/close" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/monitorSummary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:textColor="@color/text"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:tag="muted"
+            android:text="@string/monitor_tunnels"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/monitorTunnels"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:fontFamily="monospace"
+            android:textColor="@color/text"
+            android:textSize="12sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:tag="muted"
+            android:text="@string/monitor_logs"
+            android:textColor="@color/muted"
+            android:textSize="12sp" />
+
+        <ScrollView
+            android:id="@+id/monitorLogScroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="6dp"
+            android:layout_weight="1"
+            android:background="@color/bg"
+            android:fillViewport="true"
+            android:padding="8dp">
+
+            <TextView
+                android:id="@+id/monitorLogs"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textColor="@color/muted"
+                android:textIsSelectable="true"
+                android:textSize="11sp" />
+        </ScrollView>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/copyLogsBtn"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/copy_logs" />
+
+            <Button
+                android:id="@+id/clearLogsBtn"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="@string/clear_logs" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>
+
+===== FILE: app/src/main/res/layout/activity_settings.xml =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/settingsRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:orientation="vertical"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:tag="muted"
+        android:text="@string/language"
+        android:textColor="@color/muted" />
+
+    <Spinner
+        android:id="@+id/langSpinner"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="6dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:tag="muted"
+        android:text="@string/theme"
+        android:textColor="@color/muted" />
+
+    <Spinner
+        android:id="@+id/themeSpinner"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginTop="6dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:tag="muted"
+        android:text="@string/ngrok_token"
+        android:textColor="@color/muted" />
+
+    <EditText
+        android:id="@+id/tokenBox"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:background="@color/card"
+        android:inputType="textPassword"
+        android:minHeight="48dp"
+        android:padding="12dp"
+        android:textColor="@color/text" />
+
+    <Button
+        android:id="@+id/privacyBtn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/privacy" />
+
+    <Button
+        android:id="@+id/saveBtn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="@string/save" />
+</LinearLayout>
+
+===== FILE: app/src/main/res/values/strings.xml =====
+
+<resources>
+    <string name="app_name">Secure Share</string>
+    <string name="share_link">Receiver link</string>
+    <string name="copy">Copy</string>
+    <string name="share">Share</string>
+    <string name="receiver_id">Receiver ID</string>
+    <string name="id_hint">Paste the ID shown on the receiver page</string>
+    <string name="choose_file">Choose file</string>
+    <string name="settings">Settings</string>
+    <string name="language">Language</string>
+    <string name="theme">Color</string>
+    <string name="ngrok_token">ngrok token</string>
+    <string name="save">Save</string>
+    <string name="setup_title">First-time setup</string>
+    <string name="setup_msg">Approve to start the local server and an internet tunnel. The receiver link will work from any device, even outside your Wi-Fi. Keep the app open while sharing. ngrok token is optional.</string>
+    <string name="setup_token_hint">Optional: ngrok authtoken</string>
+    <string name="setup_approve">Approve and start</string>
+    <string name="setup_need_token">Enter the ngrok token first</string>
+    <string name="setup_installing">Installing bundled tools…</string>
+    <string name="setup_install_failed">Could not install tools. Try again.</string>
+    <string name="setup_restarting">Restarting…</string>
+    <string name="accept">Accept</string>
+    <string name="later">Later</string>
+    <string name="status_starting">Starting server and tunnel…</string>
+    <string name="status_ready">Internet link ready — works for any device, anywhere</string>
+    <string name="status_wifi">Local link only: same Wi-Fi. Internet tunnel is still starting — keep the app open</string>
+    <string name="status_local_only">Same Wi-Fi only. Wait for the internet tunnel, or stay on the same network</string>
+    <string name="status_no_link">Internet link is not ready. Keep the app open until a real tunnel appears. Do not share dashboard.pinggy.io or console.serveo.net</string>
+    <string name="status_waiting">Waiting for the receiver to accept…</string>
+    <string name="status_hashing">Preparing file…</string>
+    <string name="status_sending">Sending…</string>
+    <string name="status_done">Finished successfully</string>
+    <string name="status_rejected">Receiver rejected</string>
+    <string name="again">Start again</string>
+    <string name="close">Close</string>
+    <string name="no_file">Choose a file first</string>
+    <string name="no_id">Enter the receiver ID</string>
+    <string name="no_link">Link is not ready yet</string>
+    <string name="privacy">Privacy policy</string>
+    <string name="media_optional">Allow limited photos and videos (optional)</string>
+    <string name="channel_name">File transfer</string>
+    <string name="notif_running">Secure transfer in progress</string>
+    <string name="link_changed">Tunnel restarted — share the new link</string>
+    <string name="monitor">Monitor</string>
+    <string name="monitor_title">Connection monitor</string>
+    <string name="monitor_phase">Phase</string>
+    <string name="monitor_speed">Speed</string>
+    <string name="monitor_tunnels">Tunnels</string>
+    <string name="monitor_logs">Live logs</string>
+    <string name="copy_logs">Copy logs</string>
+    <string name="clear_logs">Clear</string>
+    <string name="logs_copied">Logs copied</string>
+    <string name="quality_excellent">excellent</string>
+    <string name="quality_good">good</string>
+    <string name="quality_fair">fair</string>
+    <string name="quality_poor">poor</string>
+    <string name="tunnel_up">up</string>
+    <string name="tunnel_down">down</string>
+    <string name="tunnel_opening">opening</string>
+    <string name="tunnel_primary">PRIMARY</string>
+</resources>
+
+===== FILE: app/src/main/res/values-ar/strings.xml =====
+
+<resources>
+    <string name="app_name">نقل آمن</string>
+    <string name="share_link">رابط المستلم</string>
+    <string name="copy">نسخ</string>
+    <string name="share">مشاركة</string>
+    <string name="receiver_id">معرف المستلم</string>
+    <string name="id_hint">الصق المعرف الذي ظهر عند المستلم</string>
+    <string name="choose_file">اختر الملف</string>
+    <string name="settings">الإعدادات</string>
+    <string name="language">اللغة</string>
+    <string name="theme">اللون</string>
+    <string name="ngrok_token">رمز ngrok</string>
+    <string name="save">حفظ</string>
+    <string name="setup_title">إعداد أول تشغيل</string>
+    <string name="setup_msg">وافق لتشغيل الخادم ونفق الإنترنت. رابط المستلم سيعمل من أي جهاز حتى خارج الواي فاي. أبقِ التطبيق مفتوحا أثناء المشاركة. رمز ngrok اختياري.</string>
+    <string name="setup_token_hint">اختياري: رمز ngrok</string>
+    <string name="setup_approve">موافق وبدء</string>
+    <string name="setup_need_token">أدخل رمز ngrok أولا</string>
+    <string name="setup_installing">جاري تثبيت الأدوات المضمّنة...</string>
+    <string name="setup_install_failed">تعذر تثبيت الأدوات. حاول مرة أخرى.</string>
+    <string name="setup_restarting">جاري إعادة التشغيل...</string>
+    <string name="accept">موافق</string>
+    <string name="later">لاحقا</string>
+    <string name="status_starting">جاري تشغيل الخادم والنفق...</string>
+    <string name="status_ready">رابط الإنترنت جاهز — يعمل من أي جهاز ومن أي مكان</string>
+    <string name="status_wifi">رابط محلي فقط: لنفس الواي فاي. نفق الإنترنت ما زال يبدأ — أبقِ التطبيق مفتوحا</string>
+    <string name="status_local_only">يعمل على نفس الواي فاي فقط. انتظر نفق الإنترنت أو ابقَ على نفس الشبكة</string>
+    <string name="status_no_link">رابط الإنترنت غير جاهز. أبقِ التطبيق مفتوحا حتى يظهر نفق حقيقي. لا تشارك dashboard.pinggy.io ولا console.serveo.net</string>
+    <string name="status_waiting">في انتظار موافقة المستلم...</string>
+    <string name="status_hashing">جاري تجهيز الملف...</string>
+    <string name="status_sending">جاري الإرسال...</string>
+    <string name="status_done">انتهينا بنجاح</string>
+    <string name="status_rejected">المستلم رفض</string>
+    <string name="again">بدء من جديد</string>
+    <string name="close">إغلاق</string>
+    <string name="no_file">اختر ملفا أولا</string>
+    <string name="no_id">أدخل معرف المستلم</string>
+    <string name="no_link">الرابط غير جاهز بعد</string>
+    <string name="privacy">سياسة الخصوصية</string>
+    <string name="media_optional">السماح بالصور والفيديو بشكل محدود (اختياري)</string>
+    <string name="channel_name">نقل الملف</string>
+    <string name="notif_running">جاري النقل الآمن</string>
+    <string name="link_changed">تم تجديد النفق — شارك الرابط الجديد</string>
+    <string name="monitor">المراقبة</string>
+    <string name="monitor_title">مراقبة الاتصال</string>
+    <string name="monitor_phase">الحالة</string>
+    <string name="monitor_speed">السرعة</string>
+    <string name="monitor_tunnels">الأنفاق</string>
+    <string name="monitor_logs">السجل الحي</string>
+    <string name="copy_logs">نسخ السجل</string>
+    <string name="clear_logs">مسح</string>
+    <string name="logs_copied">تم نسخ السجل</string>
+    <string name="quality_excellent">ممتاز</string>
+    <string name="quality_good">جيد</string>
+    <string name="quality_fair">متوسط</string>
+    <string name="quality_poor">ضعيف</string>
+    <string name="tunnel_up">شغال</string>
+    <string name="tunnel_down">واقف</string>
+    <string name="tunnel_opening">بيفتح</string>
+    <string name="tunnel_primary">الرئيسي</string>
+</resources>
+
+===== FILE: app/src/main/res/values/colors.xml =====
+
+<resources>
+    <color name="ic_launcher_bg">#1A1A2E</color>
+    <color name="bg">#1A1A2E</color>
+    <color name="card">#16213E</color>
+    <color name="accent">#0D6EFD</color>
+    <color name="text">#E8EEFC</color>
+    <color name="muted">#8EA0C8</color>
+</resources>
+
+===== FILE: app/src/main/res/values/themes.xml =====
+
+<resources>
+    <style name="Theme.SecureShare" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#0D6EFD</item>
+        <item name="android:statusBarColor">#1A1A2E</item>
+        <item name="android:navigationBarColor">#1A1A2E</item>
+        <item name="android:windowBackground">#1A1A2E</item>
+    </style>
+</resources>
+
+===== FILE: app/src/main/res/values-night/themes.xml =====
+
+<resources>
+    <style name="Theme.SecureShare" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#0D6EFD</item>
+        <item name="android:statusBarColor">#1A1A2E</item>
+        <item name="android:navigationBarColor">#1A1A2E</item>
+        <item name="android:windowBackground">#1A1A2E</item>
+    </style>
+</resources>
+
+===== FILE: app/src/main/res/xml/file_paths.xml =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <cache-path name="cache" path="." />
+</paths>
+
+===== FILE: app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+
+===== FILE: app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml =====
+
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_bg" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>
+
+===== FILE: app/src/main/assets/receiver.html =====
+
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>استلام ملف — P2P</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    color:#e0e0e0;
+}
+.card {
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(12px);
+    border-radius: 24px;
+    padding: 40px;
+    width: 90%; max-width: 480px;
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 25px 80px rgba(0,0,0,0.4);
+}
+h1 { text-align:center; font-size:1.6rem; margin-bottom:8px; }
+.sub { text-align:center; color:#888; font-size:0.85rem; margin-bottom:28px; }
+
+.status {
+    padding: 14px 18px; border-radius: 12px; margin-bottom: 20px;
+    font-size: 0.9rem; display: flex; align-items: center; gap: 12px;
+}
+.status.waiting { background: rgba(13,110,253,0.12); color: #6ea8fe; }
+.status.connected { background: rgba(25,135,84,0.12); color: #75b798; }
+.status.receiving { background: rgba(255,193,7,0.12); color: #ffda6a; }
+.status.done { background: rgba(25,135,84,0.15); color: #75b798; }
+.status.error { background: rgba(220,53,69,0.12); color: #ea868f; }
+
+.spinner {
+    width: 18px; height: 18px;
+    border: 2.5px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.id-box {
+    background: rgba(0,0,0,0.25);
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+    margin-bottom: 24px;
+}
+.id-label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 2px; }
+.id-value {
+    font-family: 'Courier New', monospace;
+    font-size: 1.4rem; font-weight: bold;
+    color: #0d6efd;
+    margin-top: 6px;
+    user-select: all;
+}
+
+.request {
+    background: rgba(255,255,255,0.05);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 20px;
+    display: none;
+}
+.request.active { display: block; animation: pop 0.35s ease; }
+@keyframes pop { from { opacity:0; transform: scale(0.95); } to { opacity:1; transform: scale(1); } }
+
+.info-row { margin-bottom: 14px; }
+.info-label { font-size: 0.75rem; color: #888; }
+.info-value { font-size: 1.05rem; font-weight: 600; margin-top: 3px; }
+.info-value.filename { color: #fff; word-break: break-all; }
+.info-value.size { color: #0d6efd; }
+
+.btns { display: flex; gap: 12px; margin-top: 20px; }
+.btn {
+    flex: 1; padding: 14px; border: none; border-radius: 12px;
+    font-size: 1rem; font-weight: 700; cursor: pointer; transition: 0.2s;
+}
+.btn-accept { background: #198754; color: white; }
+.btn-accept:hover { background: #157347; transform: translateY(-2px); }
+.btn-reject { background: rgba(255,255,255,0.08); color: #e0e0e0; }
+.btn-reject:hover { background: rgba(255,255,255,0.15); }
+
+.progress-wrap { display: none; margin-top: 20px; }
+.progress-wrap.active { display: block; }
+.progress-bar {
+    height: 10px; background: rgba(255,255,255,0.08);
+    border-radius: 5px; overflow: hidden;
+}
+.progress-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #0d6efd, #6610f2);
+    border-radius: 5px; transition: width 0.3s ease;
+}
+.progress-text { text-align: center; margin-top: 10px; font-size: 0.85rem; color: #888; }
+
+.log {
+    margin-top: 20px; padding: 14px;
+    background: rgba(0,0,0,0.2); border-radius: 10px;
+    font-family: 'Courier New', monospace; font-size: 0.78rem;
+    color: #666; max-height: 160px; overflow-y: auto;
+}
+.log div { margin: 3px 0; }
+.log .ok { color: #75b798; }
+.log .err { color: #ea868f; }
+.log .info { color: #6ea8fe; }
+
+.copy-hint {
+    text-align: center; font-size: 0.8rem; color: #666;
+    margin-top: 10px;
+}
+.stay-box {
+    margin: 0 0 22px 0;
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: rgba(255,193,7,0.12);
+    border: 1px solid rgba(255,193,7,0.28);
+    color: #ffda6a;
+    font-size: 0.86rem;
+    line-height: 1.55;
+    text-align: center;
+}
+.stay-box .en {
+    margin-top: 8px;
+    color: #d6c48a;
+    font-size: 0.8rem;
+    direction: ltr;
+    text-align: center;
+}
+</style>
+</head>
+<body>
+
+<div class="card">
+    <h1>📥 استلام ملف</h1>
+    <p class="sub">آمن ومشفر من طرف لطرف</p>
+
+    <div id="status" class="status waiting">
+        <div class="spinner"></div>
+        <span id="statusText">جاري الاتصال بالخادم...</span>
+    </div>
+
+    <div class="id-box">
+        <div class="id-label">معرف جهازك</div>
+        <div id="deviceId" class="id-value">---</div>
+    </div>
+    <p class="copy-hint">انسخ المعرف وأرسله للمرسل</p>
+    <div class="stay-box">
+        الرجاء العودة إلى هنا مرة أخرى بعد إرسال الرقم التعريفي والبقاء حتى إتمام العملية.
+        <div class="en">Please come back here after sending the ID, and stay on this page until the transfer finishes.</div>
+    </div>
+
+    <div id="request" class="request">
+        <div class="info-row">
+            <div class="info-label">ملف وارد</div>
+            <div id="fileName" class="info-value filename">---</div>
+        </div>
+        <div class="info-row">
+            <div class="info-label">الحجم</div>
+            <div id="fileSize" class="info-value size">---</div>
+        </div>
+        <div class="info-row">
+            <div class="info-label">المرسل</div>
+            <div id="senderId" class="info-value">---</div>
+        </div>
+        <div class="btns">
+            <button class="btn btn-accept" onclick="accept()">✓ قبول</button>
+            <button class="btn btn-reject" onclick="reject()">✕ رفض</button>
+        </div>
+    </div>
+
+    <div id="progress" class="progress-wrap">
+        <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+        <div id="progressText" class="progress-text">0%</div>
+    </div>
+
+    <div id="log" class="log"></div>
+</div>
+
+<script>
+const BACKUP_WS = [];
+const BLOCKED = ['.exe','.dll','.bat','.cmd','.sh','.ps1','.vbs','.js','.jar','.apk','.ipa','.scr'];
+const CHUNK_DEFAULT = 49152;
+const IDB_NAME = 'p2p-share';
+const IDB_STORE = 'transfers';
+
+let ws, deviceId, cryptoKey, pending, totalChunks = 0, chunkSize = CHUNK_DEFAULT, gotCount = 0, connecting = false, kpReady = null, wsIndex = 0, receiving = false, acceptedOnce = false;
+let haveBits = null, sink = null, sinkKind = '', writeQueue = Promise.resolve(), db = null;
+
+function allWs() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const primary = proto + '//' + location.host + '/ws';
+    const list = [];
+    const q = new URLSearchParams(location.search).get('ws');
+    if (q) list.push(q);
+    list.push(primary);
+    BACKUP_WS.forEach(u => { if (u && list.indexOf(u) < 0) list.push(u); });
+    return list;
+}
+
+function setStatus(text, cls) {
+    const s = document.getElementById('status');
+    s.className = 'status ' + cls;
+    s.querySelector('span').textContent = text;
+    if (cls !== 'waiting' && cls !== 'receiving') s.querySelector('.spinner').style.display = 'none';
+    else s.querySelector('.spinner').style.display = 'block';
+}
+
+function log(msg, type='info') {
+    const el = document.getElementById('log');
+    const d = document.createElement('div');
+    d.className = type; d.textContent = `[${new Date().toLocaleTimeString('ar-EG')}] ${msg}`;
+    el.appendChild(d); el.scrollTop = el.scrollHeight;
+}
+
+async function getDeviceId() {
+    const data = [navigator.userAgent, navigator.language, screen.width, screen.height, navigator.hardwareConcurrency];
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data.join('|')));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('').slice(0,16);
+}
+
+async function genKeyPair() {
+    return crypto.subtle.generateKey({name:'ECDH', namedCurve:'P-256'}, true, ['deriveKey', 'deriveBits']);
+}
+
+async function parseJwk(raw) {
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}
+
+async function deriveShared(priv, peerJwk) {
+    const peer = await crypto.subtle.importKey('jwk', peerJwk, {name:'ECDH', namedCurve:'P-256'}, false, []);
+    const bits = await crypto.subtle.deriveBits({name:'ECDH', public:peer}, priv, 256);
+    const hkdfKey = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+        {name:'HKDF', hash:'SHA-256', salt: new Uint8Array(32), info: new TextEncoder().encode('p2p-v1')},
+        hkdfKey,
+        {name:'AES-GCM', length:256},
+        false,
+        ['decrypt']
+    );
+}
+
+function bitGet(i) {
+    return !!(haveBits && i < totalChunks && (haveBits[i >> 3] & (1 << (i & 7))));
+}
+function bitSet(i) {
+    if (!haveBits || i < 0 || i >= totalChunks) return false;
+    const mask = 1 << (i & 7);
+    if (haveBits[i >> 3] & mask) return false;
+    haveBits[i >> 3] |= mask;
+    gotCount += 1;
+    return true;
+}
+function missingCount() { return totalChunks - gotCount; }
+function sampleMissing(max) {
+    const miss = [];
+    for (let i = 0; i < totalChunks && miss.length < max; i++) if (!bitGet(i)) miss.push(i);
+    return miss;
+}
+function bitsB64() {
+    let bin = '';
+    for (let i = 0; i < haveBits.length; i++) bin += String.fromCharCode(haveBits[i]);
+    return btoa(bin);
+}
+
+function openDb() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+async function saveMeta() {
+    if (!db || !pending) return;
+    try {
+        db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put({
+            filename: pending.filename,
+            file_hash: pending.file_hash,
+            file_size: pending.file_size,
+            total_chunks: totalChunks,
+            chunk_size: chunkSize,
+            got: gotCount,
+            bits: haveBits,
+            sinkKind,
+            fileHandle: sink && sink.handle ? sink.handle : undefined
+        }, 'meta');
+    } catch (e) {}
+}
+async function loadMeta() {
+    if (!db) return null;
+    return new Promise((resolve) => {
+        const req = db.transaction(IDB_STORE).objectStore(IDB_STORE).get('meta');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+    });
+}
+async function clearMeta() {
+    if (!db) return;
+    try { db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).delete('meta'); } catch (e) {}
+}
+
+async function openSink(name, size) {
+    if (window.showSaveFilePicker) {
+        try {
+            const handle = await window.showSaveFilePicker({ suggestedName: name });
+            const w = await handle.createWritable({ keepExistingData: true });
+            sink = { kind: 'fs', writable: w, handle };
+            sinkKind = 'fs';
+            log('حفظ مباشر على القرص', 'ok');
+            return;
+        } catch (e) {
+            if (e && e.name === 'AbortError') throw e;
+            log('File System غير متاح — OPFS', 'info');
+        }
+    }
+    if (navigator.storage && navigator.storage.getDirectory) {
+        const root = await navigator.storage.getDirectory();
+        const fh = await root.getFileHandle('p2p-' + (pending.file_hash || name), { create: true });
+        let access;
+        try { access = await fh.createSyncAccessHandle(); } catch (e) { access = null; }
+        if (access) {
+            sink = { kind: 'opfs-sync', handle: fh, access };
+            sinkKind = 'opfs-sync';
+        } else {
+            sink = { kind: 'opfs', handle: fh };
+            sinkKind = 'opfs';
+        }
+        log('حفظ مؤقت OPFS', 'ok');
+        return;
+    }
+    if (size > 32 * 1024 * 1024) {
+        throw new Error('no_disk_sink');
+    }
+    sink = { kind: 'mem', map: new Map() };
+    sinkKind = 'mem';
+    log('ذاكرة مؤقتة — ملف صغير فقط', 'info');
+}
+
+async function writeAt(index, bytes) {
+    const offset = index * chunkSize;
+    if (sink.kind === 'fs') {
+        await sink.writable.write({ type: 'write', position: offset, data: bytes });
+    } else if (sink.kind === 'opfs-sync') {
+        sink.access.write(bytes, { at: offset });
+    } else if (sink.kind === 'opfs') {
+        const w = await sink.handle.createWritable({ keepExistingData: true });
+        await w.write({ type: 'write', position: offset, data: bytes });
+        await w.close();
+    } else {
+        sink.map.set(index, bytes);
+    }
+}
+
+async function finishSink() {
+    if (sink.kind === 'fs') {
+        try { await sink.writable.close(); } catch (e) {}
+        return 'disk';
+    }
+    if (sink.kind === 'opfs-sync') {
+        try { sink.access.flush(); sink.access.close(); } catch (e) {}
+        const file = await sink.handle.getFile();
+        triggerDownload(file, pending.filename);
+        try { const root = await navigator.storage.getDirectory(); await root.removeEntry(sink.handle.name); } catch (e) {}
+        return 'opfs';
+    }
+    if (sink.kind === 'opfs') {
+        const file = await sink.handle.getFile();
+        triggerDownload(file, pending.filename);
+        try { const root = await navigator.storage.getDirectory(); await root.removeEntry(sink.handle.name); } catch (e) {}
+        return 'opfs';
+    }
+    const size = pending.file_size;
+    const all = new Uint8Array(size);
+    for (const [i, b] of sink.map.entries()) all.set(b, i * chunkSize);
+    triggerDownload(new Blob([all]), pending.filename);
+    sink.map.clear();
+    return 'mem';
+}
+
+function triggerDownload(data, name) {
+    const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    log('تم التحميل: ' + name, 'ok');
+}
+
+async function connect() {
+    if (connecting) return;
+    connecting = true;
+    deviceId = deviceId || await getDeviceId();
+    document.getElementById('deviceId').textContent = deviceId;
+    if (!kpReady) {
+        kpReady = await genKeyPair();
+        window.kp = kpReady;
+    }
+    const kp = kpReady;
+    const list = allWs();
+    const url = list[wsIndex % list.length];
+    log('الاتصال: ' + url);
+    try {
+        ws = new WebSocket(url);
+    } catch (err) {
+        connecting = false;
+        wsIndex += 1;
+        setTimeout(connect, 1200);
+        return;
+    }
+
+    ws.onopen = async () => {
+        connecting = false;
+        setStatus(receiving ? 'جاري الاستلام...' : 'متصل — في انتظار ملف...', receiving ? 'receiving' : 'connected');
+        log('تم الاتصال بالخادم');
+        const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
+        ws.send(JSON.stringify({type:'register', mode:'receiver', device_id:deviceId, public_key:JSON.stringify(pub)}));
+        if (pending && pending.from_id && acceptedOnce) sendResume();
+    };
+
+    ws.onmessage = async (e) => {
+        try {
+            const msg = JSON.parse(e.data);
+            await handle(msg);
+        } catch (err) {
+            log('خطأ في معالجة الرسالة: ' + err, 'err');
+        }
+    };
+
+    ws.onclose = () => {
+        connecting = false;
+        setStatus('انقطع الاتصال — تحويل المسار...', 'error');
+        log('انقطع الاتصال — مسار آخر', 'err');
+        wsIndex += 1;
+        setTimeout(connect, 800);
+    };
+
+    ws.onerror = () => log('خطأ في الاتصال', 'err');
+}
+
+async function refreshBackups() {
+    try {
+        const r = await fetch('/tunnels.json', {cache:'no-store'});
+        const j = await r.json();
+        if (j.ws) j.ws.forEach(u => { if (u && BACKUP_WS.indexOf(u) < 0) BACKUP_WS.push(u); });
+    } catch (e) {}
+}
+
+async function handle(msg) {
+    switch(msg.type) {
+        case 'registered':
+            log('تم التسجيل: ' + msg.device_id, 'ok');
+            break;
+        case 'public_key':
+            try {
+                const pub = await parseJwk(msg.public_key);
+                cryptoKey = await deriveShared(window.kp.privateKey, pub);
+                log('تم تبادل المفاتيح', 'ok');
+            } catch (err) {
+                log('فشل تجهيز المفتاح: ' + err, 'err');
+            }
+            break;
+        case 'transfer_request':
+            await onRequest(msg);
+            break;
+        case 'chunk':
+            await onChunk(msg);
+            break;
+        case 'transfer_complete':
+            await onComplete(msg);
+            break;
+        case 'resume_ack':
+            log('استئناف من القطعة ' + (msg.next || 0), 'ok');
+            break;
+        case 'pong': break;
+        default: log('رسالة: ' + msg.type);
+    }
+}
+
+async function onRequest(msg) {
+    const ext = (msg.filename || '').slice(msg.filename.lastIndexOf('.')).toLowerCase();
+    if (BLOCKED.includes(ext)) {
+        ws.send(JSON.stringify({type:'transfer_response', target_id:msg.from_id, accepted:false}));
+        log('نوع ملف ممنوع: ' + ext, 'err');
+        return;
+    }
+    const same = pending && pending.filename === msg.filename && pending.file_hash === msg.file_hash;
+    if ((receiving || acceptedOnce) && same) {
+        pending.from_id = msg.from_id;
+        const pub = await crypto.subtle.exportKey('jwk', window.kp.publicKey);
+        ws.send(JSON.stringify({type:'public_key', target_id:msg.from_id, public_key: JSON.stringify(pub)}));
+        ws.send(JSON.stringify({type:'transfer_response', target_id:msg.from_id, accepted:true, public_key: JSON.stringify(pub), resume:true}));
+        sendResume();
+        return;
+    }
+    pending = msg;
+    totalChunks = msg.total_chunks || 0;
+    chunkSize = msg.chunk_size || CHUNK_DEFAULT;
+    haveBits = new Uint8Array(Math.ceil(totalChunks / 8));
+    gotCount = 0;
+    acceptedOnce = false;
+    try {
+        if (msg.public_key && !cryptoKey) {
+            cryptoKey = await deriveShared(window.kp.privateKey, await parseJwk(msg.public_key));
+            log('تم تبادل المفاتيح', 'ok');
+        }
+    } catch (err) {
+        log('فشل تجهيز المفتاح: ' + err, 'err');
+    }
+    document.getElementById('fileName').textContent = msg.filename;
+    document.getElementById('fileSize').textContent = fmt(msg.file_size);
+    document.getElementById('senderId').textContent = msg.from_id;
+    document.getElementById('request').classList.add('active');
+    setStatus('طلب استلام ملف', 'waiting');
+    log('طلب وارد: ' + msg.filename + ' (' + fmt(msg.file_size) + ')');
+}
+
+async function accept() {
+    try {
+        await openSink(pending.filename, pending.file_size);
+    } catch (e) {
+        log(e && e.message === 'no_disk_sink' ? 'المتصفح لا يدعم حفظ الملفات الكبيرة' : 'ألغيت عملية الحفظ', 'err');
+        return;
+    }
+    const pub = await crypto.subtle.exportKey('jwk', window.kp.publicKey);
+    const pubStr = JSON.stringify(pub);
+    ws.send(JSON.stringify({type:'public_key', target_id:pending.from_id, public_key: pubStr}));
+    ws.send(JSON.stringify({type:'transfer_response', target_id:pending.from_id, accepted:true, public_key: pubStr}));
+    document.getElementById('request').classList.remove('active');
+    document.getElementById('progress').classList.add('active');
+    receiving = true;
+    acceptedOnce = true;
+    await saveMeta();
+    setStatus('جاري الاستلام...', 'receiving');
+    log('تم القبول — مرة واحدة للملف');
+}
+
+function reject() {
+    ws.send(JSON.stringify({type:'transfer_response', target_id:pending.from_id, accepted:false}));
+    document.getElementById('request').classList.remove('active');
+    setStatus('تم الرفض', 'error');
+    log('تم الرفض');
+}
+
+async function onChunk(msg) {
+    if (!cryptoKey) { log('المفتاح غير جاهز', 'err'); return; }
+    if (!sink) { log('مسار الحفظ غير جاهز', 'err'); return; }
+    try {
+        const enc = base64ToBuf(msg.data);
+        const nonce = base64ToBuf(msg.nonce);
+        const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv:nonce}, cryptoKey, enc);
+        const hash = await crypto.subtle.digest('SHA-256', plain);
+        if (bufToHex(hash) !== msg.chunk_hash) {
+            log('قطعة تالفة ' + msg.index + ' — طلب إعادة', 'err');
+            ws.send(JSON.stringify({type:'chunk_nack', target_id:pending.from_id, index:msg.index}));
+            return;
+        }
+        const bytes = new Uint8Array(plain);
+        writeQueue = writeQueue.then(async () => {
+            if (bitGet(msg.index)) return;
+            await writeAt(msg.index, bytes);
+            bitSet(msg.index);
+            updateProgress();
+            if (gotCount % 32 === 0) saveMeta();
+        }).catch((e) => log('كتابة ' + e, 'err'));
+        await writeQueue;
+        ws.send(JSON.stringify({type:'chunk_ack', target_id:pending.from_id, index:msg.index}));
+        if (msg.is_last) log('آخر قطعة وصلت');
+    } catch(e) {
+        log('خطأ في فك تشفير القطعة ' + msg.index + ': ' + e, 'err');
+        if (pending && pending.from_id) {
+            ws.send(JSON.stringify({type:'chunk_nack', target_id:pending.from_id, index:msg.index}));
+        }
+    }
+}
+
+function sendResume() {
+    if (!ws || ws.readyState !== 1 || !pending || !pending.from_id) return;
+    const miss = sampleMissing(64);
+    ws.send(JSON.stringify({
+        type:'resume',
+        target_id: pending.from_id,
+        filename: pending.filename,
+        file_hash: pending.file_hash,
+        have_bits: bitsB64(),
+        missing: miss,
+        total_chunks: totalChunks
+    }));
+    log('استئناف — ناقص ' + missingCount() + ' قطعة', 'info');
+}
+
+function updateProgress() {
+    const pct = totalChunks ? (gotCount / totalChunks) * 100 : 0;
+    const gotBytes = Math.min(gotCount * chunkSize, pending ? pending.file_size : 0);
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressText').textContent =
+        pct.toFixed(1) + '% — ' + fmt(gotBytes) + ' / ' + fmt(pending ? pending.file_size : 0);
+}
+
+async function onComplete(msg) {
+    await writeQueue;
+    const miss = missingCount();
+    if (miss) {
+        log('نواقص ' + miss + ' — استئناف', 'err');
+        sendResume();
+        return;
+    }
+    setStatus('جاري إنهاء الحفظ...', 'receiving');
+    await finishSink();
+    await clearMeta();
+    setStatus('اكتمل بنجاح', 'done');
+    log('الملف سليم — تم الحفظ', 'ok');
+    document.getElementById('progress').classList.remove('active');
+    receiving = false;
+    acceptedOnce = false;
+    sink = null;
+}
+
+function fmt(b) {
+    if (!b) return '0 B';
+    const u = ['B','KB','MB','GB'];
+    const i = Math.floor(Math.log(b)/Math.log(1024));
+    return (b/Math.pow(1024,i)).toFixed(2) + ' ' + u[i];
+}
+
+function base64ToBuf(b64) {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i=0; i<bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8.buffer;
+}
+
+function bufToHex(buf) {
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function restoreSession() {
+    const meta = await loadMeta();
+    if (!meta || !meta.file_hash) return;
+    pending = {
+        filename: meta.filename,
+        file_hash: meta.file_hash,
+        file_size: meta.file_size,
+        total_chunks: meta.total_chunks,
+        chunk_size: meta.chunk_size
+    };
+    totalChunks = meta.total_chunks || 0;
+    chunkSize = meta.chunk_size || CHUNK_DEFAULT;
+    if (meta.bits instanceof Uint8Array) haveBits = meta.bits;
+    else if (meta.bits instanceof ArrayBuffer) haveBits = new Uint8Array(meta.bits);
+    else haveBits = new Uint8Array(meta.bits || Math.ceil(totalChunks / 8));
+    gotCount = 0;
+    for (let i = 0; i < totalChunks; i++) if (bitGet(i)) gotCount += 1;
+    try {
+        if (meta.fileHandle) {
+            const fh = meta.fileHandle;
+            let perm = 'granted';
+            try { perm = await fh.queryPermission({ mode: 'readwrite' }); } catch (e) {}
+            if (perm !== 'granted') {
+                try { perm = await fh.requestPermission({ mode: 'readwrite' }); } catch (e) { perm = 'denied'; }
+            }
+            if (perm === 'granted') {
+                const w = await fh.createWritable({ keepExistingData: true });
+                sink = { kind: 'fs', writable: w, handle: fh };
+                sinkKind = 'fs';
+            }
+        }
+        if (!sink && navigator.storage && navigator.storage.getDirectory) {
+            const root = await navigator.storage.getDirectory();
+            const fh = await root.getFileHandle('p2p-' + meta.file_hash);
+            let access = null;
+            try { access = await fh.createSyncAccessHandle(); } catch (e) {}
+            sink = access ? { kind: 'opfs-sync', handle: fh, access } : { kind: 'opfs', handle: fh };
+            sinkKind = sink.kind;
+        }
+        if (!sink) return;
+        acceptedOnce = true;
+        receiving = true;
+        document.getElementById('fileName').textContent = meta.filename;
+        document.getElementById('fileSize').textContent = fmt(meta.file_size);
+        document.getElementById('progress').classList.add('active');
+        updateProgress();
+        log('استعادة نقل سابق — ' + gotCount + '/' + totalChunks, 'ok');
+    } catch (e) {
+        log('تعذر استعادة الملف المؤقت', 'err');
+    }
+}
+
+openDb().then(async (d) => {
+    db = d;
+    try { await restoreSession(); } catch (e) {}
+}).catch(() => {});
+setInterval(() => { if (ws && ws.readyState===1) ws.send(JSON.stringify({type:'ping'})); }, 8000);
+setInterval(refreshBackups, 8000);
+refreshBackups();
+connect();
+</script>
+</body>
+</html>
+
+===== FILE: app/src/main/assets/privacy_policy.html =====
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — Secure Share</title>
+</head>
+<body>
+<h1>Privacy Policy</h1>
+<p>Secure Share sends one user-selected file using end-to-end encryption. The developer does not operate a storage server for your files.</p>
+<h2>Data we do not collect</h2>
+<ul>
+<li>No account, email, or contacts</li>
+<li>No advertising identifiers</li>
+<li>No analytics SDKs</li>
+<li>No full-disk file inventory</li>
+</ul>
+<h2>Permissions</h2>
+<ul>
+<li>Internet: to publish the receiver link and transfer the chosen file</li>
+<li>Notifications: to show transfer progress</li>
+<li>Files: only the single file you pick in the system picker</li>
+<li>Photos and videos: optional, never required for sending a regular file</li>
+</ul>
+<h2>Processing</h2>
+<p>The selected file is read in chunks from disk, encrypted on your device, and written by the receiver to disk or browser private storage. A local signaling service and SSH tunnels (optional user-owned ngrok) carry encrypted chunks only. We cannot read the file. Resume continues from the last verified chunk if a tunnel drops.</p>
+<h2>Contact</h2>
+<p>Replace this paragraph with your support email before Play Store submission.</p>
+</body>
+</html>
+
+===== FILE: build-android.sh =====
+
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+SRC="$(pwd)"
+DIST="$SRC/dist"
+mkdir -p "$DIST"
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+if ! need_cmd java; then
+  echo "Installing JDK 17..."
+  if need_cmd apt-get; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y openjdk-17-jdk wget unzip rsync
+  else
+    echo "Install JDK 17 first, then rerun."
+    exit 1
+  fi
+fi
+
+if ! need_cmd wget || ! need_cmd unzip; then
+  if need_cmd apt-get; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y wget unzip rsync
+  else
+    echo "Install wget and unzip first, then rerun."
+    exit 1
+  fi
+fi
+
+if ! need_cmd rsync && need_cmd apt-get; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y rsync
+fi
+
+BUILD_ROOT="/tmp/p2p-android-build"
+echo "Copying project to $BUILD_ROOT ..."
+mkdir -p "$BUILD_ROOT"
+if need_cmd rsync; then
+  rsync -a --delete \
+    --exclude '.android-sdk/' \
+    --exclude '.gradle/' \
+    --exclude 'app/build/' \
+    --exclude 'build/' \
+    --exclude 'dist/' \
+    "$SRC/" "$BUILD_ROOT/"
+else
+  tar -C "$SRC" --exclude='.android-sdk' --exclude='.gradle' --exclude='app/build' --exclude='build' --exclude='dist' -cf - . | tar -C "$BUILD_ROOT" -xf -
+fi
+cd "$BUILD_ROOT"
+
+SDK_HOME="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/.android-sdk-p2p}}"
+mkdir -p "$SDK_HOME/cmdline-tools" "$SDK_HOME/licenses"
+printf '%s\n' "24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$SDK_HOME/licenses/android-sdk-license"
+printf '%s\n' "84831b9409646161da1e394414118184" > "$SDK_HOME/licenses/android-sdk-preview-license"
+
+if [ ! -d "$SDK_HOME/cmdline-tools/latest" ]; then
+  echo "Downloading Android command-line tools..."
+  wget --show-progress -O /tmp/cmdtools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+  unzip -o /tmp/cmdtools.zip -d "$SDK_HOME/cmdline-tools"
+  if [ -d "$SDK_HOME/cmdline-tools/cmdline-tools" ]; then
+    mv "$SDK_HOME/cmdline-tools/cmdline-tools" "$SDK_HOME/cmdline-tools/latest"
+  fi
+fi
+
+export ANDROID_HOME="$SDK_HOME"
+export ANDROID_SDK_ROOT="$SDK_HOME"
+
+if [ ! -d "$SDK_HOME/platforms/android-35" ] || [ ! -d "$SDK_HOME/build-tools/35.0.0" ]; then
+  echo "Installing Android SDK packages..."
+  "$SDK_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$SDK_HOME" --install \
+    "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+fi
+
+if [ ! -s gradle/wrapper/gradle-wrapper.jar ]; then
+  echo "Downloading Gradle wrapper jar..."
+  mkdir -p gradle/wrapper
+  wget --show-progress -O gradle/wrapper/gradle-wrapper.jar \
+    https://raw.githubusercontent.com/gradle/gradle/v8.9.0/gradle/wrapper/gradle-wrapper.jar
+fi
+
+if [ ! -f gradlew ]; then
+  cat > gradlew << 'EOF'
+#!/bin/sh
+DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+java -Xmx1024m -cp "$DIR/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
+EOF
+fi
+chmod +x gradlew
+
+printf "sdk.dir=%s\n" "$SDK_HOME" > local.properties
+export GRADLE_USER_HOME="$HOME/.gradle-p2p"
+mkdir -p "$GRADLE_USER_HOME"
+export KOTLIN_DAEMON_ENABLED=false
+
+if [ ! -f app/debug.keystore ]; then
+  echo "Creating debug keystore..."
+  keytool -genkeypair -v -keystore app/debug.keystore -storepass android -alias androiddebugkey \
+    -keypass android -keyalg RSA -keysize 2048 -validity 10000 \
+    -dname "CN=Android Debug,O=Android,C=US"
+fi
+
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export LANGUAGE=en_US:en
+
+echo "Building APK from $BUILD_ROOT ..."
+./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process assembleRelease
+
+echo "Building AAB from $BUILD_ROOT ..."
+./gradlew --no-daemon -Dkotlin.compiler.execution.strategy=in-process bundleRelease || echo "AAB failed; APK may still be ready."
+
+APK=""
+if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+  APK=app/build/outputs/apk/release/app-release.apk
+elif [ -f app/build/outputs/apk/release/app-release-unsigned.apk ]; then
+  APK=app/build/outputs/apk/release/app-release-unsigned.apk
+fi
+
+if [ -z "$APK" ]; then
+  echo "Build finished but APK was not found. Check the Gradle errors above."
+  exit 1
+fi
+
+cp "$APK" "$DIST/p2p-secure-share.apk"
+if [ -f app/build/outputs/bundle/release/app-release.aab ]; then
+  cp app/build/outputs/bundle/release/app-release.aab "$DIST/p2p-secure-share.aab"
+fi
+
+echo "Done:"
+echo "  $DIST/p2p-secure-share.apk"
+if [ -f "$DIST/p2p-secure-share.aab" ]; then
+  echo "  $DIST/p2p-secure-share.aab"
+fi
+

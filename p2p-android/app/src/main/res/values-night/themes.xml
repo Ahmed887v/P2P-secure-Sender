@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.SecureShare" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#0D6EFD</item>
+        <item name="android:statusBarColor">#1A1A2E</item>
+        <item name="android:navigationBarColor">#1A1A2E</item>
+        <item name="android:windowBackground">#1A1A2E</item>
+    </style>
+</resources>

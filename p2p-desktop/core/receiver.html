@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>استلام ملف — P2P</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    color:#e0e0e0;
+}
+.card {
+    background: rgba(255,255,255,0.06);
+    backdrop-filter: blur(12px);
+    border-radius: 24px;
+    padding: 40px;
+    width: 90%; max-width: 480px;
+    border: 1px solid rgba(255,255,255,0.08);
+    box-shadow: 0 25px 80px rgba(0,0,0,0.4);
+}
+h1 { text-align:center; font-size:1.6rem; margin-bottom:8px; }
+.sub { text-align:center; color:#888; font-size:0.85rem; margin-bottom:28px; }
+
+.status {
+    padding: 14px 18px; border-radius: 12px; margin-bottom: 20px;
+    font-size: 0.9rem; display: flex; align-items: center; gap: 12px;
+}
+.status.waiting { background: rgba(13,110,253,0.12); color: #6ea8fe; }
+.status.connected { background: rgba(25,135,84,0.12); color: #75b798; }
+.status.receiving { background: rgba(255,193,7,0.12); color: #ffda6a; }
+.status.done { background: rgba(25,135,84,0.15); color: #75b798; }
+.status.error { background: rgba(220,53,69,0.12); color: #ea868f; }
+
+.spinner {
+    width: 18px; height: 18px;
+    border: 2.5px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.id-box {
+    background: rgba(0,0,0,0.25);
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+    margin-bottom: 24px;
+}
+.id-label { font-size: 0.75rem; color: #888; text-transform: uppercase; letter-spacing: 2px; }
+.id-value {
+    font-family: 'Courier New', monospace;
+    font-size: 1.4rem; font-weight: bold;
+    color: #0d6efd;
+    margin-top: 6px;
+    user-select: all;
+}
+
+.request {
+    background: rgba(255,255,255,0.05);
+    border-radius: 16px;
+    padding: 24px;
+    margin-bottom: 20px;
+    display: none;
+}
+.request.active { display: block; animation: pop 0.35s ease; }
+@keyframes pop { from { opacity:0; transform: scale(0.95); } to { opacity:1; transform: scale(1); } }
+
+.info-row { margin-bottom: 14px; }
+.info-label { font-size: 0.75rem; color: #888; }
+.info-value { font-size: 1.05rem; font-weight: 600; margin-top: 3px; }
+.info-value.filename { color: #fff; word-break: break-all; }
+.info-value.size { color: #0d6efd; }
+
+.btns { display: flex; gap: 12px; margin-top: 20px; }
+.btn {
+    flex: 1; padding: 14px; border: none; border-radius: 12px;
+    font-size: 1rem; font-weight: 700; cursor: pointer; transition: 0.2s;
+}
+.btn-accept { background: #198754; color: white; }
+.btn-accept:hover { background: #157347; transform: translateY(-2px); }
+.btn-reject { background: rgba(255,255,255,0.08); color: #e0e0e0; }
+.btn-reject:hover { background: rgba(255,255,255,0.15); }
+
+.progress-wrap { display: none; margin-top: 20px; }
+.progress-wrap.active { display: block; }
+.progress-bar {
+    height: 10px; background: rgba(255,255,255,0.08);
+    border-radius: 5px; overflow: hidden;
+}
+.progress-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, #0d6efd, #6610f2);
+    border-radius: 5px; transition: width 0.3s ease;
+}
+.progress-text { text-align: center; margin-top: 10px; font-size: 0.85rem; color: #888; }
+
+.log {
+    margin-top: 20px; padding: 14px;
+    background: rgba(0,0,0,0.2); border-radius: 10px;
+    font-family: 'Courier New', monospace; font-size: 0.78rem;
+    color: #666; max-height: 160px; overflow-y: auto;
+}
+.log div { margin: 3px 0; }
+.log .ok { color: #75b798; }
+.log .err { color: #ea868f; }
+.log .info { color: #6ea8fe; }
+
+.copy-hint {
+    text-align: center; font-size: 0.8rem; color: #666;
+    margin-top: 10px;
+}
+.stay-box {
+    margin: 0 0 22px 0;
+    padding: 14px 16px;
+    border-radius: 12px;
+    background: rgba(255,193,7,0.12);
+    border: 1px solid rgba(255,193,7,0.28);
+    color: #ffda6a;
+    font-size: 0.86rem;
+    line-height: 1.55;
+    text-align: center;
+}
+.stay-box .en {
+    margin-top: 8px;
+    color: #d6c48a;
+    font-size: 0.8rem;
+    direction: ltr;
+    text-align: center;
+}
+</style>
+</head>
+<body>
+
+<div class="card">
+    <h1>📥 استلام ملف</h1>
+    <p class="sub">آمن ومشفر من طرف لطرف</p>
+
+    <div id="status" class="status waiting">
+        <div class="spinner"></div>
+        <span id="statusText">جاري الاتصال بالخادم...</span>
+    </div>
+
+    <div class="id-box">
+        <div class="id-label">معرف جهازك</div>
+        <div id="deviceId" class="id-value">---</div>
+    </div>
+    <p class="copy-hint">انسخ المعرف وأرسله للمرسل</p>
+    <div class="stay-box">
+        الرجاء العودة إلى هنا مرة أخرى بعد إرسال الرقم التعريفي والبقاء حتى إتمام العملية.
+        <div class="en">Please come back here after sending the ID, and stay on this page until the transfer finishes.</div>
+    </div>
+
+    <div id="request" class="request">
+        <div class="info-row">
+            <div class="info-label">ملف وارد</div>
+            <div id="fileName" class="info-value filename">---</div>
+        </div>
+        <div class="info-row">
+            <div class="info-label">الحجم</div>
+            <div id="fileSize" class="info-value size">---</div>
+        </div>
+        <div class="info-row">
+            <div class="info-label">المرسل</div>
+            <div id="senderId" class="info-value">---</div>
+        </div>
+        <div class="btns">
+            <button class="btn btn-accept" onclick="accept()">✓ قبول</button>
+            <button class="btn btn-reject" onclick="reject()">✕ رفض</button>
+        </div>
+    </div>
+
+    <div id="progress" class="progress-wrap">
+        <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+        <div id="progressText" class="progress-text">0%</div>
+    </div>
+
+    <div id="log" class="log"></div>
+</div>
+
+<script>
+const BACKUP_WS = [];
+const BLOCKED = ['.exe','.dll','.bat','.cmd','.sh','.ps1','.vbs','.js','.jar','.apk','.ipa','.scr'];
+const CHUNK_DEFAULT = 49152;
+const IDB_NAME = 'p2p-share';
+const IDB_STORE = 'transfers';
+
+let ws, deviceId, cryptoKey, pending, totalChunks = 0, chunkSize = CHUNK_DEFAULT, gotCount = 0, connecting = false, kpReady = null, wsIndex = 0, receiving = false, acceptedOnce = false;
+let haveBits = null, sink = null, sinkKind = '', writeQueue = Promise.resolve(), db = null;
+
+function allWs() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const primary = proto + '//' + location.host + '/ws';
+    const list = [];
+    const q = new URLSearchParams(location.search).get('ws');
+    if (q) list.push(q);
+    list.push(primary);
+    BACKUP_WS.forEach(u => { if (u && list.indexOf(u) < 0) list.push(u); });
+    return list;
+}
+
+function setStatus(text, cls) {
+    const s = document.getElementById('status');
+    s.className = 'status ' + cls;
+    s.querySelector('span').textContent = text;
+    if (cls !== 'waiting' && cls !== 'receiving') s.querySelector('.spinner').style.display = 'none';
+    else s.querySelector('.spinner').style.display = 'block';
+}
+
+function log(msg, type='info') {
+    const el = document.getElementById('log');
+    const d = document.createElement('div');
+    d.className = type; d.textContent = `[${new Date().toLocaleTimeString('ar-EG')}] ${msg}`;
+    el.appendChild(d); el.scrollTop = el.scrollHeight;
+}
+
+async function getDeviceId() {
+    const data = [navigator.userAgent, navigator.language, screen.width, screen.height, navigator.hardwareConcurrency];
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data.join('|')));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('').slice(0,16);
+}
+
+async function genKeyPair() {
+    return crypto.subtle.generateKey({name:'ECDH', namedCurve:'P-256'}, true, ['deriveKey', 'deriveBits']);
+}
+
+async function parseJwk(raw) {
+    if (!raw) return null;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+}
+
+async function deriveShared(priv, peerJwk) {
+    const peer = await crypto.subtle.importKey('jwk', peerJwk, {name:'ECDH', namedCurve:'P-256'}, false, []);
+    const bits = await crypto.subtle.deriveBits({name:'ECDH', public:peer}, priv, 256);
+    const hkdfKey = await crypto.subtle.importKey('raw', bits, 'HKDF', false, ['deriveKey']);
+    return crypto.subtle.deriveKey(
+        {name:'HKDF', hash:'SHA-256', salt: new Uint8Array(32), info: new TextEncoder().encode('p2p-v1')},
+        hkdfKey,
+        {name:'AES-GCM', length:256},
+        false,
+        ['decrypt']
+    );
+}
+
+function bitGet(i) {
+    return !!(haveBits && i < totalChunks && (haveBits[i >> 3] & (1 << (i & 7))));
+}
+function bitSet(i) {
+    if (!haveBits || i < 0 || i >= totalChunks) return false;
+    const mask = 1 << (i & 7);
+    if (haveBits[i >> 3] & mask) return false;
+    haveBits[i >> 3] |= mask;
+    gotCount += 1;
+    return true;
+}
+function missingCount() { return totalChunks - gotCount; }
+function sampleMissing(max) {
+    const miss = [];
+    for (let i = 0; i < totalChunks && miss.length < max; i++) if (!bitGet(i)) miss.push(i);
+    return miss;
+}
+function bitsB64() {
+    let bin = '';
+    for (let i = 0; i < haveBits.length; i++) bin += String.fromCharCode(haveBits[i]);
+    return btoa(bin);
+}
+
+function openDb() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+async function saveMeta() {
+    if (!db || !pending) return;
+    try {
+        db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).put({
+            filename: pending.filename,
+            file_hash: pending.file_hash,
+            file_size: pending.file_size,
+            total_chunks: totalChunks,
+            chunk_size: chunkSize,
+            got: gotCount,
+            bits: haveBits,
+            sinkKind,
+            fileHandle: sink && sink.handle ? sink.handle : undefined
+        }, 'meta');
+    } catch (e) {}
+}
+async function loadMeta() {
+    if (!db) return null;
+    return new Promise((resolve) => {
+        const req = db.transaction(IDB_STORE).objectStore(IDB_STORE).get('meta');
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => resolve(null);
+    });
+}
+async function clearMeta() {
+    if (!db) return;
+    try { db.transaction(IDB_STORE, 'readwrite').objectStore(IDB_STORE).delete('meta'); } catch (e) {}
+}
+
+async function openSink(name, size) {
+    if (window.showSaveFilePicker) {
+        try {
+            const handle = await window.showSaveFilePicker({ suggestedName: name });
+            const w = await handle.createWritable({ keepExistingData: true });
+            sink = { kind: 'fs', writable: w, handle };
+            sinkKind = 'fs';
+            log('حفظ مباشر على القرص', 'ok');
+            return;
+        } catch (e) {
+            if (e && e.name === 'AbortError') throw e;
+            log('File System غير متاح — OPFS', 'info');
+        }
+    }
+    if (navigator.storage && navigator.storage.getDirectory) {
+        const root = await navigator.storage.getDirectory();
+        const fh = await root.getFileHandle('p2p-' + (pending.file_hash || name), { create: true });
+        let access;
+        try { access = await fh.createSyncAccessHandle(); } catch (e) { access = null; }
+        if (access) {
+            sink = { kind: 'opfs-sync', handle: fh, access };
+            sinkKind = 'opfs-sync';
+        } else {
+            sink = { kind: 'opfs', handle: fh };
+            sinkKind = 'opfs';
+        }
+        log('حفظ مؤقت OPFS', 'ok');
+        return;
+    }
+    if (size > 32 * 1024 * 1024) {
+        throw new Error('no_disk_sink');
+    }
+    sink = { kind: 'mem', map: new Map() };
+    sinkKind = 'mem';
+    log('ذاكرة مؤقتة — ملف صغير فقط', 'info');
+}
+
+async function writeAt(index, bytes) {
+    const offset = index * chunkSize;
+    if (sink.kind === 'fs') {
+        await sink.writable.write({ type: 'write', position: offset, data: bytes });
+    } else if (sink.kind === 'opfs-sync') {
+        sink.access.write(bytes, { at: offset });
+    } else if (sink.kind === 'opfs') {
+        const w = await sink.handle.createWritable({ keepExistingData: true });
+        await w.write({ type: 'write', position: offset, data: bytes });
+        await w.close();
+    } else {
+        sink.map.set(index, bytes);
+    }
+}
+
+async function finishSink() {
+    if (sink.kind === 'fs') {
+        try { await sink.writable.close(); } catch (e) {}
+        return 'disk';
+    }
+    if (sink.kind === 'opfs-sync') {
+        try { sink.access.flush(); sink.access.close(); } catch (e) {}
+        const file = await sink.handle.getFile();
+        triggerDownload(file, pending.filename);
+        try { const root = await navigator.storage.getDirectory(); await root.removeEntry(sink.handle.name); } catch (e) {}
+        return 'opfs';
+    }
+    if (sink.kind === 'opfs') {
+        const file = await sink.handle.getFile();
+        triggerDownload(file, pending.filename);
+        try { const root = await navigator.storage.getDirectory(); await root.removeEntry(sink.handle.name); } catch (e) {}
+        return 'opfs';
+    }
+    const size = pending.file_size;
+    const all = new Uint8Array(size);
+    for (const [i, b] of sink.map.entries()) all.set(b, i * chunkSize);
+    triggerDownload(new Blob([all]), pending.filename);
+    sink.map.clear();
+    return 'mem';
+}
+
+function triggerDownload(data, name) {
+    const url = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    log('تم التحميل: ' + name, 'ok');
+}
+
+async function connect() {
+    if (connecting) return;
+    connecting = true;
+    deviceId = deviceId || await getDeviceId();
+    document.getElementById('deviceId').textContent = deviceId;
+    if (!kpReady) {
+        kpReady = await genKeyPair();
+        window.kp = kpReady;
+    }
+    const kp = kpReady;
+    const list = allWs();
+    const url = list[wsIndex % list.length];
+    log('الاتصال: ' + url);
+    try {
+        ws = new WebSocket(url);
+    } catch (err) {
+        connecting = false;
+        wsIndex += 1;
+        setTimeout(connect, 1200);
+        return;
+    }
+
+    ws.onopen = async () => {
+        connecting = false;
+        setStatus(receiving ? 'جاري الاستلام...' : 'متصل — في انتظار ملف...', receiving ? 'receiving' : 'connected');
+        log('تم الاتصال بالخادم');
+        const pub = await crypto.subtle.exportKey('jwk', kp.publicKey);
+        ws.send(JSON.stringify({type:'register', mode:'receiver', device_id:deviceId, public_key:JSON.stringify(pub)}));
+        if (pending && pending.from_id && acceptedOnce) sendResume();
+    };
+
+    ws.onmessage = async (e) => {
+        try {
+            const msg = JSON.parse(e.data);
+            await handle(msg);
+        } catch (err) {
+            log('خطأ في معالجة الرسالة: ' + err, 'err');
+        }
+    };
+
+    ws.onclose = () => {
+        connecting = false;
+        setStatus('انقطع الاتصال — تحويل المسار...', 'error');
+        log('انقطع الاتصال — مسار آخر', 'err');
+        wsIndex += 1;
+        setTimeout(connect, 800);
+    };
+
+    ws.onerror = () => log('خطأ في الاتصال', 'err');
+}
+
+async function refreshBackups() {
+    try {
+        const r = await fetch('/tunnels.json', {cache:'no-store'});
+        const j = await r.json();
+        if (j.ws) j.ws.forEach(u => { if (u && BACKUP_WS.indexOf(u) < 0) BACKUP_WS.push(u); });
+    } catch (e) {}
+}
+
+async function handle(msg) {
+    switch(msg.type) {
+        case 'registered':
+            log('تم التسجيل: ' + msg.device_id, 'ok');
+            break;
+        case 'public_key':
+            try {
+                const pub = await parseJwk(msg.public_key);
+                cryptoKey = await deriveShared(window.kp.privateKey, pub);
+                log('تم تبادل المفاتيح', 'ok');
+            } catch (err) {
+                log('فشل تجهيز المفتاح: ' + err, 'err');
+            }
+            break;
+        case 'transfer_request':
+            await onRequest(msg);
+            break;
+        case 'chunk':
+            await onChunk(msg);
+            break;
+        case 'transfer_complete':
+            await onComplete(msg);
+            break;
+        case 'resume_ack':
+            log('استئناف من القطعة ' + (msg.next || 0), 'ok');
+            break;
+        case 'pong': break;
+        default: log('رسالة: ' + msg.type);
+    }
+}
+
+async function onRequest(msg) {
+    const ext = (msg.filename || '').slice(msg.filename.lastIndexOf('.')).toLowerCase();
+    if (BLOCKED.includes(ext)) {
+        ws.send(JSON.stringify({type:'transfer_response', target_id:msg.from_id, accepted:false}));
+        log('نوع ملف ممنوع: ' + ext, 'err');
+        return;
+    }
+    const same = pending && pending.filename === msg.filename && pending.file_hash === msg.file_hash;
+    if ((receiving || acceptedOnce) && same) {
+        pending.from_id = msg.from_id;
+        const pub = await crypto.subtle.exportKey('jwk', window.kp.publicKey);
+        ws.send(JSON.stringify({type:'public_key', target_id:msg.from_id, public_key: JSON.stringify(pub)}));
+        ws.send(JSON.stringify({type:'transfer_response', target_id:msg.from_id, accepted:true, public_key: JSON.stringify(pub), resume:true}));
+        sendResume();
+        return;
+    }
+    pending = msg;
+    totalChunks = msg.total_chunks || 0;
+    chunkSize = msg.chunk_size || CHUNK_DEFAULT;
+    haveBits = new Uint8Array(Math.ceil(totalChunks / 8));
+    gotCount = 0;
+    acceptedOnce = false;
+    try {
+        if (msg.public_key && !cryptoKey) {
+            cryptoKey = await deriveShared(window.kp.privateKey, await parseJwk(msg.public_key));
+            log('تم تبادل المفاتيح', 'ok');
+        }
+    } catch (err) {
+        log('فشل تجهيز المفتاح: ' + err, 'err');
+    }
+    document.getElementById('fileName').textContent = msg.filename;
+    document.getElementById('fileSize').textContent = fmt(msg.file_size);
+    document.getElementById('senderId').textContent = msg.from_id;
+    document.getElementById('request').classList.add('active');
+    setStatus('طلب استلام ملف', 'waiting');
+    log('طلب وارد: ' + msg.filename + ' (' + fmt(msg.file_size) + ')');
+}
+
+async function accept() {
+    try {
+        await openSink(pending.filename, pending.file_size);
+    } catch (e) {
+        log(e && e.message === 'no_disk_sink' ? 'المتصفح لا يدعم حفظ الملفات الكبيرة' : 'ألغيت عملية الحفظ', 'err');
+        return;
+    }
+    const pub = await crypto.subtle.exportKey('jwk', window.kp.publicKey);
+    const pubStr = JSON.stringify(pub);
+    ws.send(JSON.stringify({type:'public_key', target_id:pending.from_id, public_key: pubStr}));
+    ws.send(JSON.stringify({type:'transfer_response', target_id:pending.from_id, accepted:true, public_key: pubStr}));
+    document.getElementById('request').classList.remove('active');
+    document.getElementById('progress').classList.add('active');
+    receiving = true;
+    acceptedOnce = true;
+    await saveMeta();
+    setStatus('جاري الاستلام...', 'receiving');
+    log('تم القبول — مرة واحدة للملف');
+}
+
+function reject() {
+    ws.send(JSON.stringify({type:'transfer_response', target_id:pending.from_id, accepted:false}));
+    document.getElementById('request').classList.remove('active');
+    setStatus('تم الرفض', 'error');
+    log('تم الرفض');
+}
+
+async function onChunk(msg) {
+    if (!cryptoKey) { log('المفتاح غير جاهز', 'err'); return; }
+    if (!sink) { log('مسار الحفظ غير جاهز', 'err'); return; }
+    try {
+        const enc = base64ToBuf(msg.data);
+        const nonce = base64ToBuf(msg.nonce);
+        const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv:nonce}, cryptoKey, enc);
+        const hash = await crypto.subtle.digest('SHA-256', plain);
+        if (bufToHex(hash) !== msg.chunk_hash) {
+            log('قطعة تالفة ' + msg.index + ' — طلب إعادة', 'err');
+            ws.send(JSON.stringify({type:'chunk_nack', target_id:pending.from_id, index:msg.index}));
+            return;
+        }
+        const bytes = new Uint8Array(plain);
+        writeQueue = writeQueue.then(async () => {
+            if (bitGet(msg.index)) return;
+            await writeAt(msg.index, bytes);
+            bitSet(msg.index);
+            updateProgress();
+            if (gotCount % 32 === 0) saveMeta();
+        }).catch((e) => log('كتابة ' + e, 'err'));
+        await writeQueue;
+        ws.send(JSON.stringify({type:'chunk_ack', target_id:pending.from_id, index:msg.index}));
+        if (msg.is_last) log('آخر قطعة وصلت');
+    } catch(e) {
+        log('خطأ في فك تشفير القطعة ' + msg.index + ': ' + e, 'err');
+        if (pending && pending.from_id) {
+            ws.send(JSON.stringify({type:'chunk_nack', target_id:pending.from_id, index:msg.index}));
+        }
+    }
+}
+
+function sendResume() {
+    if (!ws || ws.readyState !== 1 || !pending || !pending.from_id) return;
+    const miss = sampleMissing(64);
+    ws.send(JSON.stringify({
+        type:'resume',
+        target_id: pending.from_id,
+        filename: pending.filename,
+        file_hash: pending.file_hash,
+        have_bits: bitsB64(),
+        missing: miss,
+        total_chunks: totalChunks
+    }));
+    log('استئناف — ناقص ' + missingCount() + ' قطعة', 'info');
+}
+
+function updateProgress() {
+    const pct = totalChunks ? (gotCount / totalChunks) * 100 : 0;
+    const gotBytes = Math.min(gotCount * chunkSize, pending ? pending.file_size : 0);
+    document.getElementById('progressFill').style.width = pct + '%';
+    document.getElementById('progressText').textContent =
+        pct.toFixed(1) + '% — ' + fmt(gotBytes) + ' / ' + fmt(pending ? pending.file_size : 0);
+}
+
+async function onComplete(msg) {
+    await writeQueue;
+    const miss = missingCount();
+    if (miss) {
+        log('نواقص ' + miss + ' — استئناف', 'err');
+        sendResume();
+        return;
+    }
+    setStatus('جاري إنهاء الحفظ...', 'receiving');
+    await finishSink();
+    await clearMeta();
+    setStatus('اكتمل بنجاح', 'done');
+    log('الملف سليم — تم الحفظ', 'ok');
+    document.getElementById('progress').classList.remove('active');
+    receiving = false;
+    acceptedOnce = false;
+    sink = null;
+}
+
+function fmt(b) {
+    if (!b) return '0 B';
+    const u = ['B','KB','MB','GB'];
+    const i = Math.floor(Math.log(b)/Math.log(1024));
+    return (b/Math.pow(1024,i)).toFixed(2) + ' ' + u[i];
+}
+
+function base64ToBuf(b64) {
+    const bin = atob(b64);
+    const u8 = new Uint8Array(bin.length);
+    for (let i=0; i<bin.length; i++) u8[i] = bin.charCodeAt(i);
+    return u8.buffer;
+}
+
+function bufToHex(buf) {
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+async function restoreSession() {
+    const meta = await loadMeta();
+    if (!meta || !meta.file_hash) return;
+    pending = {
+        filename: meta.filename,
+        file_hash: meta.file_hash,
+        file_size: meta.file_size,
+        total_chunks: meta.total_chunks,
+        chunk_size: meta.chunk_size
+    };
+    totalChunks = meta.total_chunks || 0;
+    chunkSize = meta.chunk_size || CHUNK_DEFAULT;
+    if (meta.bits instanceof Uint8Array) haveBits = meta.bits;
+    else if (meta.bits instanceof ArrayBuffer) haveBits = new Uint8Array(meta.bits);
+    else haveBits = new Uint8Array(meta.bits || Math.ceil(totalChunks / 8));
+    gotCount = 0;
+    for (let i = 0; i < totalChunks; i++) if (bitGet(i)) gotCount += 1;
+    try {
+        if (meta.fileHandle) {
+            const fh = meta.fileHandle;
+            let perm = 'granted';
+            try { perm = await fh.queryPermission({ mode: 'readwrite' }); } catch (e) {}
+            if (perm !== 'granted') {
+                try { perm = await fh.requestPermission({ mode: 'readwrite' }); } catch (e) { perm = 'denied'; }
+            }
+            if (perm === 'granted') {
+                const w = await fh.createWritable({ keepExistingData: true });
+                sink = { kind: 'fs', writable: w, handle: fh };
+                sinkKind = 'fs';
+            }
+        }
+        if (!sink && navigator.storage && navigator.storage.getDirectory) {
+            const root = await navigator.storage.getDirectory();
+            const fh = await root.getFileHandle('p2p-' + meta.file_hash);
+            let access = null;
+            try { access = await fh.createSyncAccessHandle(); } catch (e) {}
+            sink = access ? { kind: 'opfs-sync', handle: fh, access } : { kind: 'opfs', handle: fh };
+            sinkKind = sink.kind;
+        }
+        if (!sink) return;
+        acceptedOnce = true;
+        receiving = true;
+        document.getElementById('fileName').textContent = meta.filename;
+        document.getElementById('fileSize').textContent = fmt(meta.file_size);
+        document.getElementById('progress').classList.add('active');
+        updateProgress();
+        log('استعادة نقل سابق — ' + gotCount + '/' + totalChunks, 'ok');
+    } catch (e) {
+        log('تعذر استعادة الملف المؤقت', 'err');
+    }
+}
+
+openDb().then(async (d) => {
+    db = d;
+    try { await restoreSession(); } catch (e) {}
+}).catch(() => {});
+setInterval(() => { if (ws && ws.readyState===1) ws.send(JSON.stringify({type:'ping'})); }, 8000);
+setInterval(refreshBackups, 8000);
+refreshBackups();
+connect();
+</script>
+</body>
+</html>

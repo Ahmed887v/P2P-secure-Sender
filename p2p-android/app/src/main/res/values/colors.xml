@@ -1,0 +1,8 @@
+<resources>
+    <color name="ic_launcher_bg">#1A1A2E</color>
+    <color name="bg">#1A1A2E</color>
+    <color name="card">#16213E</color>
+    <color name="accent">#0D6EFD</color>
+    <color name="text">#E8EEFC</color>
+    <color name="muted">#8EA0C8</color>
+</resources>
